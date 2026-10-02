@@ -9,7 +9,7 @@ on:
         default: v0.1.0
 
 permissions:
-  contents: read
+  contents: write # GitHub requires push access to read unpublished draft releases.
 
 jobs:
   installed-runtime:
