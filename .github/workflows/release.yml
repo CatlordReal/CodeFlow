@@ -1,0 +1,71 @@
+name: Windows release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Verify release tag matches app version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $expected = "v$version"
+          if ($env:RELEASE_TAG -ne $expected) {
+            throw "Release tag '$env:RELEASE_TAG' must match package version '$expected'."
+          }
+      - run: npm ci
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: v__VERSION__
+          releaseName: CodeFlow v__VERSION__
+          releaseBody: |
+            Offline C++ flowcharts for Windows 10/11 x64.
+
+            Download the setup.exe installer below. Future updates are available from the app's Check updates button.
+
+            This first release is not Authenticode signed; Windows may show an unknown publisher notice. Update packages are cryptographically signed and verified by CodeFlow.
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --bundles nsis
+      - name: Launch and capture Windows runtime
+        shell: pwsh
+        timeout-minutes: 2
+        run: >-
+          ./.github/scripts/windows-smoke.ps1
+          -ExecutablePath ./src-tauri/target/release/codeflow.exe
+          -ScreenshotPath ./output/windows-smoke.png
+      - name: Upload Windows runtime proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codeflow-windows-smoke
+          path: output/
+          if-no-files-found: warn
+          retention-days: 14
