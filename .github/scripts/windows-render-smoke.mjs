@@ -32,6 +32,8 @@ try {
   await clickComments(client);
   const commentsRestored = await waitForGraph(client, deadline, true);
   await setViewport(client, 760, 900);
+  await evaluate(client, `document.querySelector('.react-flow__controls-fitview')?.click()`);
+  await delay(500);
   const compact = await waitForGraph(client, deadline, true);
   const compactBytes = await capture(client, path.join(options.output, "windows-smoke-compact.png"));
 
