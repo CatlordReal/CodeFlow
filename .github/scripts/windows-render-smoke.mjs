@@ -21,6 +21,7 @@ try {
 
   await setViewport(client, 1440, 900);
   const initial = await waitForGraph(client, deadline, { comments: false });
+  const updater = await checkUpdater(client, deadline);
   await selectValue(client, 'select[aria-label="Theme"]', 'catppuccin-latte');
   await waitForValue(client, deadline, `document.documentElement.dataset.theme === 'catppuccin-latte' && document.documentElement.style.colorScheme === 'light'`, "Latte theme");
   const wideBytes = await capture(client, path.join(options.output, "windows-smoke-wide.png"));
@@ -99,6 +100,7 @@ int smokeSum(const std::vector<int>& values) {
     loopExpansion: { overview: overview.nodeCount, expanded: expanded.nodeCount, restored: overviewRestored.nodeCount },
     edits: { naturalLabel: boxLabel, annotation, retainedAcrossModeChange: true },
     projectSave: { controlPresent: saveProjectPresent, nativeDialogOpened: false, persistenceTested: false },
+    updater,
   };
   await writeFile(path.join(options.output, "windows-render-smoke.json"), `${JSON.stringify(result, null, 2)}\n`);
   console.log(`Rendered ${initial.nodeCount} initial nodes; loop overview ${overview.nodeCount}/${expanded.nodeCount}; themes and box edits passed.`);
@@ -201,6 +203,34 @@ async function waitForValue(client, end, expression, description) {
     await delay(100);
   }
   throw new Error(`CodeFlow did not reach ${description}.`);
+}
+
+async function checkUpdater(client, end) {
+  const clicked = await evaluate(client, `(() => {
+    const button = document.querySelector('button[aria-label="Check for updates"]');
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  })()`);
+  if (!clicked) throw new Error("Check for updates control is unavailable.");
+
+  let state;
+  while (Date.now() < end) {
+    state = await evaluate(client, `(() => {
+      const banner = document.querySelector('.update-banner');
+      const kind = [...(banner?.classList ?? [])].find(name => name.startsWith('update-banner--'))?.slice('update-banner--'.length) ?? '';
+      return { kind, message: banner?.querySelector('span')?.textContent?.trim() ?? '' };
+    })()`);
+    if (state.kind === "error") throw new Error(state.message || "Updater returned an error.");
+    if (state.kind === "current") {
+      if (state.message !== "CodeFlow is up to date.") throw new Error(`Unexpected updater response: ${state.message}`);
+      await evaluate(client, `document.querySelector('button[aria-label="Dismiss update status"]')?.click()`);
+      await waitForValue(client, end, `!document.querySelector('.update-banner')`, "dismissed updater status");
+      return state;
+    }
+    await delay(100);
+  }
+  throw new Error(`Updater did not complete: ${JSON.stringify(state)}.`);
 }
 
 async function selectValue(client, selector, value) {

@@ -36,8 +36,6 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - name: Verify updater endpoint with Windows native TLS
-        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --test updater_endpoint updater_plugin_reaches_and_parses_public_endpoint -- --ignored --nocapture
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
