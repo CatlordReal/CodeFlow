@@ -1,4 +1,5 @@
 mod analyzer;
+mod ai;
 use std::io::Write;
 use tauri_plugin_dialog::DialogExt;
 
@@ -36,7 +37,7 @@ async fn save_document(
     contents: String,
     extension: String,
 ) -> Result<bool, String> {
-    if !matches!(extension.as_str(), "cpp" | "svg") || contents.len() > 16 * 1024 * 1024 {
+    if !matches!(extension.as_str(), "cpp" | "svg" | "codeflow") || contents.len() > 16 * 1024 * 1024 {
         return Err("Unsupported document type or document larger than 16 MB.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -62,7 +63,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![inspect_cpp, analyze_cpp, save_document])
+        .invoke_handler(tauri::generate_handler![inspect_cpp, analyze_cpp, save_document, ai::ai_models, ai::ai_download, ai::ai_captions])
         .run(tauri::generate_context!())
         .expect("error while running CodeFlow");
 }

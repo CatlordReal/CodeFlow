@@ -13,9 +13,15 @@ import type { Update } from "@tauri-apps/plugin-updater";
 import { analyzeCpp, inspectCpp, saveDocument } from "./api";
 import FlowNodeCard from "./FlowNodeCard";
 import { createSvgDocument, svgDocumentName } from "./exportSvg";
-import { layoutGraph, type CanvasNode } from "./layout";
+import { edgeTypes, layoutGraph, type CanvasNode } from "./layout";
+import { formatUpdaterError } from "./update";
+import ThemePicker from "./ThemePicker";
+import LocalAI from "./LocalAI";
+import { overviewGraph, simplifyGraph } from "./simplify";
+import { presentGraph, readProject, type ChartMode, type ChartEdits, type CaptionSets, type Project } from "./presentation";
+import "./editing.css";
 import { SAMPLE_CPP } from "./sample";
-import type { FlowEdge, FlowGraph, FunctionInfo } from "./types";
+import type { FlowGraph, FunctionInfo } from "./types";
 
 const nodeTypes = { flowNode: FlowNodeCard };
 
@@ -46,7 +52,18 @@ export default function App() {
   const [functions, setFunctions] = useState<FunctionInfo[]>([]);
   const [selectedFunction, setSelectedFunction] = useState("");
   const [inspectedSource, setInspectedSource] = useState("");
-  const [includeComments, setIncludeComments] = useState(true);
+  const [includeComments, setIncludeComments] = useState(false);
+  const [expandLoops, setExpandLoops] = useState(false);
+  const [mode, setMode] = useState<ChartMode>('natural');
+  const [edits, setEdits] = useState<ChartEdits>({});
+  const [captions, setCaptions] = useState<CaptionSets>({});
+  const [selectedNodeId, setSelectedNodeId] = useState('');
+  const [showAI, setShowAI] = useState(false);
+  const [projectDirty, setProjectDirty] = useState(false);
+  const layoutRequest = useRef(0);
+  const [graphSource, setGraphSource] = useState('');
+  const [graphFunction, setGraphFunction] = useState('');
+  const openRequest = useRef(0);
   const [graph, setGraph] = useState<FlowGraph>({ nodes: [], edges: [], diagnostics: [] });
   const [canvasNodes, setCanvasNodes] = useState<CanvasNode[]>([]);
   const [canvasEdges, setCanvasEdges] = useState<Edge[]>([]);
@@ -71,6 +88,21 @@ export default function App() {
   const saveRequest = useRef(0);
   const isDesktop = "__TAURI_INTERNALS__" in window;
   sourceRef.current = source;
+  const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments});
+  projectRef.current = {format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments};
+  useEffect(() => {
+    if(isDesktop) return;
+    const warn = (event: BeforeUnloadEvent) => { if(isDirty || projectDirty) {event.preventDefault();event.returnValue='';} };
+    window.addEventListener('beforeunload',warn); return ()=>window.removeEventListener('beforeunload',warn);
+  },[isDirty,projectDirty,isDesktop]);
+  useEffect(() => {
+    if(!isDesktop || (!isDirty && !projectDirty)) return;
+    let disposed=false; let unlisten: (()=>void) | undefined;
+    void import('@tauri-apps/api/window').then(({getCurrentWindow})=>getCurrentWindow().onCloseRequested(event=>{
+      if(!window.confirm('Close CodeFlow with unsaved work? Save a project first to keep source, captions and notes.')) event.preventDefault();
+    })).then(remove=>{if(disposed) remove();else unlisten=remove;}).catch(()=>undefined);
+    return ()=>{disposed=true;unlisten?.();};
+  },[isDirty,projectDirty,isDesktop]);
 
   useEffect(() => {
     const request = ++inspectRequest.current;
@@ -109,12 +141,10 @@ export default function App() {
     setIsAnalyzing(true);
     void (async () => {
       try {
-        const nextGraph = await analyzeCpp(source, selectedFunction, includeComments);
-        const laidOut = await layoutGraph(nextGraph);
+        const nextGraph = simplifyGraph(await analyzeCpp(source, selectedFunction, true));
         if (request !== analyzeRequest.current) return;
-        setGraph(nextGraph);
-        setCanvasNodes(laidOut.nodes);
-        setCanvasEdges(laidOut.edges);
+        setGraph(nextGraph); setGraphSource(source); setGraphFunction(selectedFunction);
+
         setError("");
         window.setTimeout(() => void flowRef.current?.fitView({ padding: 0.18, duration: 350 }), 30);
       } catch (cause) {
@@ -127,7 +157,42 @@ export default function App() {
         if (request === analyzeRequest.current) setIsAnalyzing(false);
       }
     })();
-  }, [source, inspectedSource, selectedFunction, includeComments, refreshKey]);
+  }, [source, inspectedSource, selectedFunction, refreshKey]);
+
+  const viewGraph = useMemo(() => graphSource !== source || graphFunction !== selectedFunction ? {nodes:[],edges:[],diagnostics:[]} : expandLoops ? graph : overviewGraph(graph), [graph,expandLoops,graphSource,graphFunction,source,selectedFunction]);
+  const editKey = selectedFunction + (expandLoops ? ':detail' : ':overview');
+  const displayedGraph = useMemo(() => presentGraph(viewGraph, mode, includeComments, edits[editKey], captions[editKey]), [viewGraph, mode, includeComments, edits, captions, editKey]);
+  useEffect(() => {
+    const request = ++layoutRequest.current;
+    if (!displayedGraph.nodes.length) { setCanvasNodes([]); setCanvasEdges([]); return; }
+    void layoutGraph(displayedGraph).then(result => {
+      if (request !== layoutRequest.current) return;
+      setCanvasNodes(result.nodes); setCanvasEdges(result.edges);
+      window.setTimeout(() => void flowRef.current?.fitView({padding:0.12,duration:0}), 60);
+    }).catch(cause => { if(request===layoutRequest.current) setError(readError(cause)); });
+    return () => { layoutRequest.current++; };
+  }, [displayedGraph]);
+  const selectedNode = displayedGraph.nodes.find(node => node.id === selectedNodeId);
+  const graphKey = source + '\0' + editKey;
+  const editNode = (field: 'code' | 'natural' | 'annotation', text: string) => {
+    setEdits(current => ({...current, [editKey]: {...current[editKey], [selectedNodeId]: {...current[editKey]?.[selectedNodeId], [field]: text}}}));
+    setProjectDirty(true);
+  };
+  const changeSource = (text: string) => {
+    if ((Object.keys(edits).length || Object.keys(captions).length) && !window.confirm('Changing C++ resets diagram captions and notes. Save your project first if needed. Continue?')) return;
+    openRequest.current++;
+    setEdits({}); setCaptions({}); setSelectedNodeId(''); setSource(text); setIsDirty(true); setProjectDirty(true);
+  };
+  const saveProject = async () => {
+    const project: Project = {format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments};
+    const snapshot = JSON.stringify(project, null, 2);
+    try {
+      if(await saveDocument(fileName.replace(/\.[^.]+$/, '')+'.codeflow', snapshot, 'codeflow')) {
+        if(JSON.stringify(projectRef.current, null, 2)===snapshot) {setProjectDirty(false);setIsDirty(false);}
+        setDocumentStatus({kind:'success',message:'Project saved with captions and notes.'});
+      }
+    } catch(cause) { setDocumentStatus({kind:'error',message:readError(cause)}); }
+  };
 
   const selectedName = functions.find((item) => item.id === selectedFunction)?.name ?? "flowchart";
   const lineCount = useMemo(() => source.split("\n").length, [source]);
@@ -135,17 +200,33 @@ export default function App() {
   const openFile = useCallback(async (file?: File) => {
     if (!file) return;
     try {
+      if ((isDirty || projectDirty) && !window.confirm('Replace this document? Save source or project first to keep unsaved work.')) return;
+      if(file.size > 16 * 1024 * 1024) throw new Error('File is larger than 16 MB.');
+      const request = ++openRequest.current;
+      const before = projectRef.current;
       const contents = await file.text();
+      if(request !== openRequest.current) return;
+      const now = projectRef.current;
+      if(before.source!==now.source || before.fileName!==now.fileName || before.edits!==now.edits || before.captions!==now.captions || before.mode!==now.mode || before.expandLoops!==now.expandLoops || before.includeComments!==now.includeComments) {
+        setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'}); return;
+      }
       saveRequest.current += 1;
-      setSource(contents);
-      setFileName(file.name);
+      if(file.name.endsWith('.codeflow')) {
+        const project = readProject(contents);
+        setSource(project.source); setFileName(project.fileName); setMode(project.mode); setExpandLoops(project.expandLoops); setIncludeComments(project.includeComments);
+        setEdits(project.edits); setCaptions(project.captions);
+      } else {
+        if(new TextEncoder().encode(contents).length > 2 * 1024 * 1024) throw new Error('C++ source must be smaller than 2 MB.');
+        setSource(contents); setFileName(file.name); setEdits({}); setCaptions({});
+      }
+      setProjectDirty(false); setSelectedNodeId('');
       setIsDirty(false);
       setSelectedLine(null);
       setError("");
     } catch (cause) {
       setError(readError(cause));
     }
-  }, []);
+  }, [isDirty, projectDirty]);
 
   const saveSource = useCallback(async (): Promise<boolean> => {
     const cleanName = fileName.replace(/\s*\*$/, "") || "untitled.cpp";
@@ -217,7 +298,7 @@ export default function App() {
       setShowUpdateDialog(true);
     } catch (cause) {
       updateRef.current = null;
-      setUpdateStatus({ kind: "error", message: `Update check failed: ${readError(cause)}` });
+      setUpdateStatus({ kind: "error", message: `Update check failed: ${formatUpdaterError(cause)}` });
     }
   }, [isDesktop]);
 
@@ -290,7 +371,7 @@ export default function App() {
     } catch (cause) {
       updateRef.current = null;
       void update.close().catch(() => undefined);
-      setUpdateStatus({ kind: "error", message: `Update failed: ${readError(cause)}` });
+      setUpdateStatus({ kind: "error", message: `Update failed: ${formatUpdaterError(cause)}` });
     }
   }, []);
 
@@ -307,10 +388,10 @@ export default function App() {
     if (gutterRef.current) gutterRef.current.scrollTop = editor.scrollTop;
   }, [source]);
 
-  const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_event, node) => revealNode(node), [revealNode]);
+  const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_event, node) => {setSelectedNodeId(node.id); revealNode(node);}, [revealNode]);
 
   const exportGraph = useCallback(async () => {
-    const svg = createSvgDocument(canvasNodes, graph.edges);
+    const svg = createSvgDocument(canvasNodes, canvasEdges, mode);
     if (!svg) return;
     try {
       const saved = await saveDocument(svgDocumentName(selectedName), svg, "svg");
@@ -320,7 +401,7 @@ export default function App() {
     } catch (cause) {
       setDocumentStatus({ kind: "error", message: `Export failed: ${readError(cause)}` });
     }
-  }, [canvasNodes, graph.edges, selectedName]);
+  }, [canvasNodes, canvasEdges, selectedName, mode]);
 
   const statusText = error
     ? error
@@ -328,10 +409,10 @@ export default function App() {
       ? "Analyzing C++…"
       : functions.length === 0
         ? "No functions found"
-        : `${graph.nodes.length} nodes · ${graph.edges.length} paths`;
+        : `${viewGraph.nodes.length} boxes · ${viewGraph.edges.length} paths`;
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell mode-${mode}`}>
       <header className="topbar" data-tauri-drag-region>
         <div className="brand" aria-label="CodeFlow">
           <span className="brand__mark"><span /> <span /> <span /></span>
@@ -339,19 +420,21 @@ export default function App() {
           <span className="brand__language">C++</span>
         </div>
         <div className="toolbar">
+          <ThemePicker />
           <input
             ref={fileInputRef}
             className="visually-hidden"
             type="file"
-            accept=".cpp,.cc,.cxx,.h,.hh,.hpp,.hxx,text/plain"
+            accept=".codeflow,.cpp,.cc,.cxx,.h,.hh,.hpp,.hxx,text/plain"
             onChange={(event) => void openFile(event.target.files?.[0])}
           />
           <button className="button" onClick={() => fileInputRef.current?.click()} title="Open file (Ctrl/⌘ O)">
             <Icon name="file" /> <span>Open</span>
           </button>
           <button className="button" onClick={() => void saveSource()} title="Save source (Ctrl/⌘ S)">
-            <Icon name="save" /> <span>Save</span>
+            <Icon name="save" /> <span>Save C++</span>
           </button>
+          <button className="button" onClick={()=>void saveProject()}>Save project</button>
           <button className="button button--icon" onClick={() => setRefreshKey((value) => value + 1)} title="Analyze (Ctrl/⌘ Enter)" aria-label="Analyze again">
             <Icon name="refresh" />
           </button>
@@ -401,7 +484,7 @@ export default function App() {
           }}
         >
           <div className="panel__header">
-            <div className="file-name"><span className="file-name__dot" />{fileName}{isDirty ? " *" : ""}</div>
+            <div className="file-name"><span className="file-name__dot" />{fileName}{isDirty || projectDirty ? " *" : ""}</div>
             <span className="panel__hint">Drop or paste C++</span>
           </div>
           <div className="editor-wrap">
@@ -415,28 +498,35 @@ export default function App() {
               aria-label="C++ source code"
               value={source}
               spellCheck={false}
-              onChange={(event) => { setSource(event.target.value); setIsDirty(true); }}
+              onChange={(event) => changeSource(event.target.value)}
               onScroll={(event) => { if (gutterRef.current) gutterRef.current.scrollTop = event.currentTarget.scrollTop; }}
             />
           </div>
           <div className="source-footer">
             {!isDesktop && <span className="desktop-update-note">Updates: desktop only</span>}
+            {projectDirty && <span>Project unsaved</span>}
             <span>{lineCount} lines</span>
             <span>UTF-8</span>
           </div>
         </section>
 
         <section className="panel chart-panel">
+          <div className="chart-options">
+            <label>Labels <select aria-label="Label mode" value={mode} onChange={e=>{setMode(e.target.value as ChartMode);setProjectDirty(true);}}><option value="natural">Natural language</option><option value="code">Code</option></select></label>
+            <button className="button" onClick={()=>setShowAI(current=>!current)}>Local AI</button>
+            <label><input type="checkbox" checked={expandLoops} onChange={e=>{setExpandLoops(e.target.checked);setSelectedNodeId('');setProjectDirty(true);}}/> Expand loops</label>
+            <span>Click a box to edit or annotate</span>
+          </div>
           <div className="chart-toolbar">
             <label className="field">
               <span>Function</span>
-              <select value={selectedFunction} onChange={(event) => setSelectedFunction(event.target.value)} disabled={functions.length === 0}>
+              <select value={selectedFunction} onChange={(event) => {setSelectedFunction(event.target.value);setSelectedNodeId('');}} disabled={functions.length === 0}>
                 {functions.length === 0 && <option value="">No functions</option>}
                 {functions.map((item) => <option value={item.id} key={item.id}>{item.name} · line {item.line}</option>)}
               </select>
             </label>
             <label className="toggle">
-              <input type="checkbox" checked={includeComments} onChange={(event) => setIncludeComments(event.target.checked)} />
+              <input type="checkbox" checked={includeComments} onChange={(event) => {setIncludeComments(event.target.checked);setProjectDirty(true);}} />
               <span className="toggle__track"><span /></span>
               <span>Comments</span>
             </label>
@@ -448,25 +538,26 @@ export default function App() {
                 nodes={canvasNodes}
                 edges={canvasEdges}
                 nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
                 onInit={(instance) => { flowRef.current = instance; }}
                 onNodeClick={onNodeClick}
                 fitView
                 fitViewOptions={{ padding: 0.18 }}
                 minZoom={0.18}
                 maxZoom={1.8}
-                nodesDraggable
+                nodesDraggable={false}
                 nodesConnectable={false}
                 elementsSelectable
                 proOptions={{ hideAttribution: true }}
               >
-                <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="#394334" />
+                <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--line)" />
                 <Controls showInteractive={false} position="bottom-right" />
                 <MiniMap
                   position="bottom-left"
                   pannable
                   zoomable
-                  nodeColor={(node) => (node.data as CanvasNode["data"]).flow.kind === "decision" ? "#93a879" : "#6f8061"}
-                  maskColor="rgba(10, 13, 10, .68)"
+                  nodeColor="var(--line-strong)"
+                  maskColor="var(--panel)"
                 />
               </ReactFlow>
             ) : (
@@ -487,6 +578,17 @@ export default function App() {
         </section>
       </section>
 
+      {showAI && <LocalAI graph={viewGraph} source={source} graphKey={graphKey} onClose={()=>setShowAI(false)} onCaptions={(next,key)=>{
+        if(key!==graphKey) return;
+        setCaptions(current=>({...current,[editKey]:next}));setMode('natural');setProjectDirty(true);
+      }}/>}
+      {selectedNode && !showAI && <aside className="node-editor" aria-label="Edit flowchart box">
+        <header><strong>Box · line {selectedNode.line}</strong><button className="button" onClick={()=>setSelectedNodeId('')}>Close</button></header>
+        <label>{mode==='code'?'Code label':'Natural language label'}<textarea aria-label="Box label" maxLength={2000} value={selectedNode.label} onChange={e=>editNode(mode,e.target.value)}/></label>
+        <label>Annotation<textarea aria-label="Box annotation" maxLength={2000} value={selectedNode.annotation ?? ''} onChange={e=>editNode('annotation',e.target.value)}/></label>
+        <details><summary>Original C++</summary><pre>{source.slice(byteToStringIndex(source,selectedNode.start_byte),byteToStringIndex(source,selectedNode.end_byte))}</pre></details>
+        <button className="button" onClick={()=>{setEdits(current=>{const next={...current,[editKey]:{...current[editKey]}};delete next[editKey][selectedNodeId];return next;});setProjectDirty(true);}}>Reset box</button>
+      </aside>}
       {showUpdateDialog && availableUpdate && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) dismissUpdate(); }}>
           <section ref={updateDialogRef} tabIndex={-1} className="update-dialog" role="dialog" aria-modal="true" aria-labelledby="update-title" aria-describedby="update-warning">
@@ -496,11 +598,11 @@ export default function App() {
               <h2 id="update-title">CodeFlow {availableUpdate.version}</h2>
               <p>Installed version: {availableUpdate.currentVersion}</p>
               {availableUpdate.body && <div className="release-notes">{availableUpdate.body}</div>}
-              <p className="update-warning" id="update-warning"><strong>Save edited source first.</strong> Installing closes CodeFlow, then starts the updated app.</p>
-              {isDirty && <p className="unsaved-warning">Unsaved edits detected.</p>}
+              <p className="update-warning" id="update-warning"><strong>Save your project first.</strong> Installing closes CodeFlow, then starts the updated app.</p>
+              {(isDirty || projectDirty) && <p className="unsaved-warning">Unsaved edits detected. Save a project to keep diagram captions and notes.</p>}
               <div className="update-dialog__actions">
                 <button className="button" onClick={dismissUpdate}>Not now</button>
-                <button className="button" onClick={() => void saveSource()}><Icon name="save" /> Save source</button>
+                <button className="button" onClick={() => void saveProject()}><Icon name="save" /> Save project</button>
                 <button className="button button--primary" onClick={() => void installUpdate()}><Icon name="update" /> Install update</button>
               </div>
             </div>

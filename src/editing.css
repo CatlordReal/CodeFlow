@@ -1,0 +1,20 @@
+.chart-panel { grid-template-rows: 43px 50px minmax(0, 1fr) 31px; }
+.chart-options { display:flex; align-items:center; gap:12px; padding:6px 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+.chart-options label { display:flex; align-items:center; gap:8px; font-size:12px; }
+.chart-options > span { margin-left:auto; color:var(--muted); font-size:11px; }
+select { color:var(--text); background:var(--panel-2); border:1px solid var(--line-strong); border-radius:6px; padding:5px 8px; }
+.node-editor,.ai-panel { position:fixed; right:16px; top:116px; z-index:35; width:min(380px,calc(100vw - 32px)); max-height:calc(100vh - 140px); overflow:auto; padding:16px; background:var(--panel); color:var(--text); border:1px solid var(--line-strong); border-radius:12px; box-shadow:0 12px 40px #0003; }
+.node-editor header,.ai-panel header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.ai-panel h2 { margin:0; font-size:16px; }
+.node-editor label,.caption-review label { display:grid; gap:7px; margin:12px 0; font-size:12px; }
+.node-editor textarea,.caption-review textarea { width:100%; min-height:70px; resize:vertical; border:1px solid var(--line-strong); border-radius:6px; padding:8px; color:var(--text); background:var(--bg); }
+.node-editor pre,.caption-review code { white-space:pre-wrap; overflow-wrap:anywhere; font-size:11px; }
+.node-editor summary { cursor:pointer; font-size:12px; }
+.node-editor details { margin:12px 0; }
+.ai-panel { width:min(480px,calc(100vw - 32px)); }
+.ai-panel p { font-size:12px; line-height:1.5; color:var(--muted); }
+.ai-panel a { color:var(--accent); }
+.ai-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.caption-review { max-height:40vh; overflow:auto; }
+@media(max-width:1100px) { .chart-options > span {display:none} .toolbar {gap:5px} .button {padding-inline:8px} }
+@media(max-width:820px) { .chart-panel {grid-template-rows:43px 48px minmax(0,1fr) 28px} .topbar {flex-wrap:wrap;height:auto} .app-shell {grid-template-rows:auto minmax(0,1fr)} .toolbar {padding-block:8px;flex-wrap:wrap} }

@@ -12,6 +12,10 @@ export type FlowNode = {
   start_byte: number;
   end_byte: number;
   comments: string[];
+  shape?: "terminator" | "decision" | "process" | "io" | "subprocess";
+  source_ids?: string[];
+  original_label?: string;
+  annotation?: string;
 };
 
 export type FlowEdge = {

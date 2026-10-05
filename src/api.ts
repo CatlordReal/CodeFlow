@@ -24,11 +24,11 @@ export async function analyzeCpp(
 export async function saveDocument(
   name: string,
   contents: string,
-  extension: "cpp" | "svg",
+  extension: "cpp" | "svg" | "codeflow",
 ): Promise<boolean> {
   const hasExtension = extension === "cpp"
     ? /\.(?:cpp|cc|cxx|h|hh|hpp|hxx)$/i.test(name)
-    : name.toLowerCase().endsWith(".svg");
+    : name.toLowerCase().endsWith(`.${extension}`);
   const fileName = hasExtension ? name : `${name}.${extension}`;
   if (isTauri()) {
     return invoke<boolean>("save_document", { name: fileName, contents, extension });

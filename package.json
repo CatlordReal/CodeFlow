@@ -1,13 +1,14 @@
 {
   "name": "codeflow",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test": "node scripts/test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
@@ -23,6 +24,7 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.4",
+    "esbuild": "^0.28.2",
     "typescript": "~5.8.3",
     "vite": "^7.1.7"
   }

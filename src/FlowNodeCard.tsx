@@ -1,38 +1,34 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import type { CanvasNode } from "./layout";
+import { NODE_WIDTH, nodeHeight, type CanvasNode } from "./layout";
 import { nodeTextLayout } from "./textLayout";
-
-const KIND_LABEL: Record<string, string> = {
-  start: "Entry",
-  end: "Exit",
-  decision: "Decision",
-  process: "Step",
-  return: "Return",
-  throw: "Throw",
-  break: "Break",
-  continue: "Continue",
-  switch: "Switch",
-};
+import { flowShape } from "./simplify";
+import "./flowchart.css";
 
 export default function FlowNodeCard({ data, selected }: NodeProps<CanvasNode>) {
   const { flow } = data;
-  const { labelLines, commentLines } = nodeTextLayout(flow);
+  const { labelLines, commentLines, annotationLines } = nodeTextLayout(flow);
+  const shape = flowShape(flow);
+  const height = nodeHeight(flow);
+  const outline = shape === "decision"
+    ? <polygon points={`${NODE_WIDTH / 2},1 ${NODE_WIDTH - 1},${height / 2} ${NODE_WIDTH / 2},${height - 1} 1,${height / 2}`} />
+    : shape === "io"
+      ? <polygon points={`24,1 ${NODE_WIDTH - 1},1 ${NODE_WIDTH - 24},${height - 1} 1,${height - 1}`} />
+      : shape === "terminator"
+        ? <ellipse cx={NODE_WIDTH / 2} cy={height / 2} rx={NODE_WIDTH / 2 - 1} ry={height / 2 - 1} />
+        : <rect x="1" y="1" width={NODE_WIDTH - 2} height={height - 2} />;
   return (
-    <div className={`flow-node flow-node--${flow.kind} ${selected ? "is-selected" : ""}`}>
-      <Handle type="target" position={Position.Top} />
-      <div className="flow-node__meta">
-        <span>{KIND_LABEL[flow.kind] ?? flow.kind}</span>
-        <span>Line {flow.line}</span>
+    <div className={`flow-symbol flow-symbol--${shape} ${selected ? "is-selected" : ""}`} style={{ width: NODE_WIDTH, height }} title={`Line ${flow.line}${flow.original_label ? ` · ${flow.original_label}` : ""}`}>
+      <svg className="flow-symbol__outline" viewBox={`0 0 ${NODE_WIDTH} ${height}`} aria-hidden="true">{outline}</svg>
+      {shape === "subprocess" && <svg className="flow-symbol__outline flow-symbol__subprocess" viewBox={`0 0 ${NODE_WIDTH} ${height}`} aria-hidden="true"><path d={`M 12 1 V ${height - 1} M ${NODE_WIDTH - 12} 1 V ${height - 1}`} /></svg>}
+      {([ ["n", Position.Top], ["s", Position.Bottom], ["e", Position.Right], ["w", Position.Left] ] as const).flatMap(([side, position]) => [
+        <Handle key={`in-${side}`} id={`in-${side}`} type="target" position={position} isConnectable={false} />,
+        <Handle key={`out-${side}`} id={`out-${side}`} type="source" position={position} isConnectable={false} />,
+      ])}
+      <div className="flow-symbol__content">
+        <div className="flow-symbol__label">{labelLines.map((line, index) => <span key={index}>{line || "\u00a0"}</span>)}</div>
+        {commentLines.length > 0 && <div className="flow-symbol__comments">{commentLines.map((line, index) => <span key={index}>{line || "\u00a0"}</span>)}</div>}
+        {annotationLines.length > 0 && <div className="flow-symbol__annotation">{annotationLines.map((line, index) => <span key={index}>{line || "\u00a0"}</span>)}</div>}
       </div>
-      <div className="flow-node__label">
-        {labelLines.map((line, index) => <span key={`${flow.id}-label-${index}`}>{line || "\u00a0"}</span>)}
-      </div>
-      {commentLines.length > 0 && (
-        <div className="flow-node__comments">
-          {commentLines.map((line, index) => <span key={`${flow.id}-comment-${index}`}>{line || "\u00a0"}</span>)}
-        </div>
-      )}
-      <Handle type="source" position={Position.Bottom} />
     </div>
   );
 }
