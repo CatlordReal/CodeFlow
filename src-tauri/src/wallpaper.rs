@@ -104,12 +104,11 @@ fn sample_windows_wallpaper() -> Result<Option<WallpaperTheme>, String> {
     reader = reader
         .with_guessed_format()
         .map_err(|_| "Windows wallpaper format is unsupported.".to_string())?;
-    reader.limits(image::Limits {
-        max_image_width: Some(16_384),
-        max_image_height: Some(16_384),
-        max_alloc: Some(128 * 1024 * 1024),
-        ..image::Limits::default()
-    });
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
     let image = reader
         .decode()
         .map_err(|_| "Windows wallpaper could not be decoded.".to_string())?;
