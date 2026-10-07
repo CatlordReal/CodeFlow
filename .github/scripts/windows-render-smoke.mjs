@@ -373,7 +373,11 @@ async function chooseTheme(client, name) {
     const summary = picker?.querySelector('summary');
     if (!picker || !summary) return false;
     summary.click();
-    const button = [...picker.querySelectorAll('.theme-picker__menu button')].find(item => item.textContent.trim() === ${JSON.stringify(name)});
+    const button = [...picker.querySelectorAll('.theme-picker__menu button')].find(item => {
+      const label = item.cloneNode(true);
+      label.querySelectorAll('small').forEach(detail => detail.remove());
+      return label.textContent.trim() === ${JSON.stringify(name)};
+    });
     if (!button) return false;
     button.click();
     return true;
