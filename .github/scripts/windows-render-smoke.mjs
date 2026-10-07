@@ -108,6 +108,9 @@ int helper(int value) { return value * 2; }`;
   await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
   await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === ${JSON.stringify(boxLabel)}`, "edited label after comment removal");
 
+  await evaluate(client, `document.querySelector('.flow-symbol--subprocess')?.closest('.react-flow__node')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await waitForValue(client, deadline, `Boolean(document.querySelector('.node-editor'))`, "box editor after source edit");
+
   await clickCheckboxLabel(client, ".node-editor", "Flag for removal");
   await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess')?.dataset.flagged === 'true' && Boolean(document.querySelector('.flow-symbol__flag-marker'))`, "flagged box");
   await clickButton(client, ".chart-options", "Highlight unmodified labels");
