@@ -127,7 +127,7 @@ jobs:
           chmod +x "$APPIMAGE"
           mkdir -p output
           bootstrap=()
-          if [ "$RELEASE_VERSION" = "0.4.0" ]; then
+          if [ "$RELEASE_VERSION" = "0.4.1" ]; then
             bootstrap+=(--allow-bootstrap-updater)
           fi
           APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a -s '-screen 0 1440x900x24' \
