@@ -71,8 +71,13 @@ jobs:
           workspaces: src-tauri -> target
       - name: Install Tauri and runtime-test dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
+          # The runner's Azure HTTP mirror can stall on package indexes.
+          # Keep Ubuntu's signed repositories, using the official HTTPS mirror.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          fi
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 update
+          sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 install --no-install-recommends -y \
             build-essential \
             curl \
             dbus-x11 \
