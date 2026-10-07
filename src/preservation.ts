@@ -1,8 +1,16 @@
 import type {ChartState} from './history';
 import type {FlowGraph, FlowNode, FunctionInfo} from './types';
-import {overviewGraph} from './simplify';
+import {overviewIdentityNodes} from './simplify';
 
-export type FunctionMapping = {before:string;after:string;detail:Map<string,string>;overview:Map<string,string>;loops:Map<string,string>};
+export type FunctionMapping = {
+  before:string;
+  after:string;
+  detail:Map<string,string>;
+  overview:Map<string,string>;
+  loops:Map<string,string>;
+  overviewSourceIds?:Set<string>;
+  overviewTargetIds?:Set<string>;
+};
 
 /** Never transfer a caption to different code merely because its box number matches. */
 function identity(node:FlowNode, header:boolean):string {
@@ -38,9 +46,11 @@ export function matchFunctions(before:FunctionInfo[],after:FunctionInfo[]):[Func
 export function mapFunction(before:string,after:string,oldGraph:FlowGraph,newGraph:FlowGraph):FunctionMapping{
   const signature=(graph:FlowGraph)=>{const indexes=new Map(graph.nodes.map((node,index)=>[node.id,index]));return JSON.stringify([graph.nodes.map(node=>identity(node,false)),graph.edges.map(edge=>[indexes.get(edge.source),indexes.get(edge.target),edge.label])]);};
   const unchanged=signature(oldGraph)===signature(newGraph);
+  const oldOverview=overviewIdentityNodes(oldGraph),newOverview=overviewIdentityNodes(newGraph);
   return {before,after,detail:matchNodes(oldGraph.nodes,newGraph.nodes,true,unchanged),
-    overview:matchNodes(overviewGraph(oldGraph).nodes,overviewGraph(newGraph).nodes,false,unchanged),
-    loops:matchNodes(oldGraph.nodes.filter(n=>n.kind==='loop'),newGraph.nodes.filter(n=>n.kind==='loop'),true,unchanged)};
+    overview:matchNodes(oldOverview,newOverview,false,unchanged),
+    loops:matchNodes(oldGraph.nodes.filter(n=>n.kind==='loop'),newGraph.nodes.filter(n=>n.kind==='loop'),true,unchanged),
+    overviewSourceIds:new Set(oldOverview.map(node=>node.id)),overviewTargetIds:new Set(newOverview.map(node=>node.id))};
 }
 export function remapChart(state:ChartState,mappings:FunctionMapping[]):ChartState{
   const edits:ChartState['edits']={},captions:ChartState['captions']={},loopOverrides:ChartState['loopOverrides']={},hiddenBoxes:ChartState['hiddenBoxes']={},functionPositions:ChartState['functionPositions']={};
@@ -52,8 +62,11 @@ export function remapChart(state:ChartState,mappings:FunctionMapping[]):ChartSta
       }
     }
     for(const [oldId,newId] of mapping.loops)if(state.loopOverrides[mapping.before]?.[oldId]!==undefined)(loopOverrides[mapping.after]??={})[newId]=state.loopOverrides[mapping.before][oldId];
-    const nodes=new Map([...mapping.detail,...mapping.overview]);
-    const hidden=(state.hiddenBoxes[mapping.before]??[]).flatMap(id=>nodes.has(id)?[nodes.get(id)!]:[]);
+    const hidden=(state.hiddenBoxes[mapping.before]??[]).flatMap(id=>{
+      if(mapping.overviewSourceIds?.has(id))return mapping.overview.has(id)?[mapping.overview.get(id)!]:[];
+      const target=mapping.detail.get(id);
+      return target&&!mapping.overviewTargetIds?.has(target)?[target]:[];
+    });
     if(hidden.length)hiddenBoxes[mapping.after]=hidden;
     if(state.functionPositions[mapping.before])functionPositions[mapping.after]=state.functionPositions[mapping.before];
   }

@@ -252,6 +252,20 @@ export function overviewGraph(graph: FlowGraph, options: Partial<OverviewOptions
   return { ...graph, nodes, edges: deduplicateEdges(edges) };
 }
 
+/** Every node that can own overview presentation state at any expansion depth. */
+export function overviewIdentityNodes(graph: FlowGraph): FlowNode[] {
+  const nodes = new Map(graph.nodes.filter((node) => node.kind !== "loop").map((node) => [node.id, node]));
+  const depths = [...new Set(analyzeLoops(graph)
+    .filter((loop) => loop.can_collapse)
+    .map((loop) => loop.depth))].sort((a, b) => a - b);
+  for (const depth of depths) {
+    for (const node of overviewGraph(graph, { depth }).nodes) {
+      if (node.loop_collapsed) nodes.set(node.id, node);
+    }
+  }
+  return [...nodes.values()];
+}
+
 /** Preserve literal contents while ignoring layout whitespace between C++ tokens. */
 function canonicalLabel(label:string):string[]{
   return label.match(/(?:u8|u|U|L)?R"([^ ()\\\t\r\n]{0,16})\([\s\S]*?\)\1"|(?:u8|u|U|L)?"(?:\\[\s\S]|[^"\\])*"|(?:u|U|L)?'(?:\\[\s\S]|[^'\\])*'|[A-Za-z_][A-Za-z_0-9]*|[0-9]+(?:\.[0-9]+)?|[^\s]/g)??[];
