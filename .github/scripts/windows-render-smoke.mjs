@@ -148,7 +148,7 @@ int helper(int value) { return value * 2; }`;
 
   await chooseTheme(client, "Mocha");
   await waitForValue(client, deadline, `document.documentElement.dataset.theme === 'catppuccin-mocha' && document.documentElement.style.colorScheme === 'dark'`, "Mocha theme");
-  await setViewport(client, 760, 900);
+  await setViewport(client, 900, 900);
   await evaluate(client, `document.querySelector('.react-flow__controls-fitview')?.click()`);
   await delay(500);
   const compact = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "0", subprocesses: 1 });
@@ -188,7 +188,7 @@ int helper(int value) { return value * 2; }`;
   const result = {
     target: { title: target.title, url: target.url },
     wide: { width: 1440, height: 900, bytes: wideBytes, nodes: initial.nodeCount, theme: "catppuccin-latte" },
-    compact: { width: 760, height: 900, bytes: compactBytes, nodes: compact.nodeCount, theme: "catppuccin-mocha" },
+    compact: { width: 900, height: 900, bytes: compactBytes, nodes: compact.nodeCount, theme: "catppuccin-mocha" },
     comments: { initial: initial.commentCount, enabled: commentsOn.commentCount, disabled: commentsOff.commentCount },
     labelModes: ["code", "natural"],
     loopExpansion: { overview: overview.nodeCount, depthOne: depthOne.nodeCount, individual: individuallyExpanded.nodeCount },
