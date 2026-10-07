@@ -4,6 +4,8 @@ use std::{collections::BTreeMap, sync::atomic::{AtomicBool, Ordering}, time::Dur
 
 const BASE: &str = "http://127.0.0.1:11434";
 const MODELS: [&str; 3] = ["qwen3.5:4b", "qwen2.5:0.5b", "qwen2.5:3b"];
+const DIGEST_MISMATCH: &str = "digest mismatch, file must be downloaded again";
+const DIGEST_RETRIES: usize = 1;
 static BUSY: AtomicBool = AtomicBool::new(false);
 struct BusyGuard;
 impl Drop for BusyGuard { fn drop(&mut self) { BUSY.store(false, Ordering::Release); } }
@@ -38,6 +40,26 @@ async fn read_json(mut response: reqwest::Response) -> Result<Value, String> {
     Ok(value)
 }
 
+fn is_digest_mismatch(error: &str) -> bool {
+    error.to_ascii_lowercase().contains(DIGEST_MISMATCH)
+}
+
+fn should_retry_digest(error: &str, retries_done: usize) -> bool {
+    retries_done < DIGEST_RETRIES && is_digest_mismatch(error)
+}
+
+fn digest_retry_failed(first: &str, second: &str) -> String {
+    format!("Ollama checksum recovery failed. First attempt: {first} Retry: {second} Check free disk space and any proxy, VPN, firewall, or antivirus that may alter downloads, update Ollama, then retry.")
+}
+
+async fn pull_model(http: &reqwest::Client, model: &str) -> Result<(), String> {
+    let response = http.post(format!("{BASE}/api/pull"))
+        .json(&json!({"model": model, "stream": false})).send().await.map_err(connection_error)?;
+    let value = read_json(response).await?;
+    if value["status"].as_str() != Some("success") { return Err("Model download did not complete. Retry to resume.".into()); }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn ai_models() -> Result<Vec<String>, String> {
     let response = client(10)?.get(format!("{BASE}/api/tags")).send().await.map_err(connection_error)?;
@@ -50,11 +72,16 @@ pub async fn ai_models() -> Result<Vec<String>, String> {
 pub async fn ai_download(model: String) -> Result<(), String> {
     validate_model(&model)?;
     let _busy = lock()?;
-    let response = client(900)?.post(format!("{BASE}/api/pull"))
-        .json(&json!({"model": model, "stream": false})).send().await.map_err(connection_error)?;
-    let value = read_json(response).await?;
-    if value["status"].as_str() != Some("success") { return Err("Model download did not complete. Retry to resume.".into()); }
-    Ok(())
+    let http = client(900)?;
+    let mut first_mismatch = None;
+    for retries_done in 0..=DIGEST_RETRIES {
+        match pull_model(&http, &model).await {
+            Ok(()) => return Ok(()),
+            Err(error) if should_retry_digest(&error, retries_done) => first_mismatch = Some(error),
+            Err(error) => return Err(first_mismatch.map_or(error.clone(), |first| digest_retry_failed(&first, &error))),
+        }
+    }
+    unreachable!("bounded pull attempts always return")
 }
 
 #[derive(Deserialize, Serialize)]
@@ -122,5 +149,19 @@ mod tests {
         assert!(validate_captions(r#"{"other":"Skip step"}"#, &nodes).is_err());
         assert!(validate_captions(r#"{"n1":""}"#, &nodes).is_err());
         assert!(validate_model("qwen:cloud").is_err());
+    }
+
+    #[test]
+    fn digest_mismatch_gets_one_safe_retry_and_actionable_error() {
+        let first = "digest mismatch, file must be downloaded again: want sha256:abc, got sha256:def";
+        let second = "digest mismatch, file must be downloaded again: want sha256:abc, got sha256:ghi";
+        assert!(is_digest_mismatch(first));
+        assert!(!is_digest_mismatch("connection reset"));
+        assert!(should_retry_digest(first, 0));
+        assert!(!should_retry_digest(first, 1));
+        let error = digest_retry_failed(first, second);
+        assert!(error.contains(first));
+        assert!(error.contains(second));
+        assert!(error.contains("proxy, VPN, firewall, or antivirus"));
     }
 }

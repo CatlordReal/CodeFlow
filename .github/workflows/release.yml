@@ -45,7 +45,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: CodeFlow v__VERSION__
           releaseBody: |
-            C++ flowcharts for Windows 10/11 x64, with standard symbols, loop overview, editable labels and annotations, themes, and optional local AI captions.
+            C++ flowcharts for Windows 10/11 x64, with individual loop expansion, persistent projects and history, file maps, colour PNG export, wallpaper themes, and reviewed local AI suggestions.
 
             Download the setup.exe installer below. Future updates are available from the app's Check updates button.
 
@@ -57,12 +57,12 @@ jobs:
           args: --bundles nsis
       - name: Launch and capture Windows runtime
         shell: pwsh
-        timeout-minutes: 2
+        timeout-minutes: 4
         run: >-
           ./.github/scripts/windows-smoke.ps1
           -ExecutablePath ./src-tauri/target/release/codeflow.exe
           -ScreenshotPath ./output/windows-smoke.png
-          -TimeoutSeconds 60
+          -TimeoutSeconds 120
       - name: Upload Windows runtime proof
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

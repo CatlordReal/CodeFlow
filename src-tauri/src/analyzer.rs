@@ -4,8 +4,17 @@ use tree_sitter::{Node, Parser, Tree};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FunctionInfo {
     pub id: String,
+    pub identity: String,
     pub name: String,
+    pub qualified_name: String,
     pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FunctionReference {
+    pub source: String,
+    pub target: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -23,6 +32,9 @@ pub struct FlowNode {
     pub line: usize,
     pub start_byte: usize,
     pub end_byte: usize,
+    pub source_identity: String,
+    pub header_identity: Option<String>,
+    pub loop_condition: Option<String>,
     pub comments: Vec<String>,
 }
 
@@ -46,18 +58,20 @@ struct ControlContext {
     continue_target: Option<String>,
 }
 
-struct GraphBuilder<'a> {
-    source: &'a str,
+struct GraphBuilder<'source, 'tree> {
+    source: &'source str,
+    root: Node<'tree>,
     nodes: Vec<FlowNode>,
     edges: Vec<FlowEdge>,
     next_node: usize,
     next_edge: usize,
 }
 
-impl<'a> GraphBuilder<'a> {
-    fn new(source: &'a str) -> Self {
+impl<'source, 'tree> GraphBuilder<'source, 'tree> {
+    fn new(source: &'source str, root: Node<'tree>) -> Self {
         Self {
             source,
+            root,
             nodes: Vec::new(),
             edges: Vec::new(),
             next_node: 0,
@@ -92,9 +106,39 @@ impl<'a> GraphBuilder<'a> {
             line,
             start_byte,
             end_byte,
+            source_identity: source_identity(self.source, self.root, kind, start_byte, end_byte),
+            header_identity: None,
+            loop_condition: None,
             comments: Vec::new(),
         });
         id
+    }
+
+    fn set_header_identity(&mut self, id: &str, start_byte: usize, end_byte: usize) {
+        let identity = source_identity(self.source, self.root, "header", start_byte, end_byte);
+        if let Some(node) = self.nodes.iter_mut().find(|node| node.id == id) {
+            node.header_identity = Some(identity);
+        }
+    }
+
+    fn set_loop_metadata(&mut self, id: &str, statement: Node<'_>) {
+        let body_start = statement
+            .child_by_field_name("body")
+            .map(|body| body.start_byte())
+            .unwrap_or_else(|| statement.end_byte());
+        let condition_node = statement.child_by_field_name("condition");
+        let header_range = if matches!(statement.kind(), "while_statement" | "do_statement") {
+            condition_node
+                .map(|condition| (condition.start_byte(), condition.end_byte()))
+                .unwrap_or((statement.start_byte(), body_start))
+        } else {
+            (statement.start_byte(), body_start)
+        };
+        self.set_header_identity(id, header_range.0, header_range.1);
+        let condition = condition_node.map(|condition| condition_text(self.source, condition));
+        if let Some(node) = self.nodes.iter_mut().find(|node| node.id == id) {
+            node.loop_condition = condition;
+        }
     }
 
     fn connect(&mut self, exits: &[Exit], target: &str) {
@@ -268,11 +312,14 @@ impl<'a> GraphBuilder<'a> {
         if incoming.is_empty() {
             return Vec::new();
         }
-        let condition = statement
-            .child_by_field_name("condition")
+        let condition_node = statement.child_by_field_name("condition");
+        let condition = condition_node
             .map(|node| condition_text(self.source, node))
             .unwrap_or_else(|| "condition".to_owned());
         let decision = self.add_node(condition, "decision", statement);
+        if let Some(condition) = condition_node {
+            self.set_header_identity(&decision, condition.start_byte(), condition.end_byte());
+        }
         self.connect(&incoming, &decision);
 
         let then_statement = statement.child_by_field_name("consequence");
@@ -321,6 +368,7 @@ impl<'a> GraphBuilder<'a> {
         }
         let label = loop_label(self.source, statement);
         let loop_node = self.add_node(label, "loop", statement);
+        self.set_loop_metadata(&loop_node, statement);
         self.connect(&incoming, &loop_node);
         let after = self.add_node_at(
             "Continue".to_owned(),
@@ -369,14 +417,8 @@ impl<'a> GraphBuilder<'a> {
             return Vec::new();
         }
         let body = statement.child_by_field_name("body");
-        let condition_location = statement
-            .child_by_field_name("condition")
-            .unwrap_or(statement);
-        let condition = self.add_node(
-            loop_label(self.source, statement),
-            "loop",
-            condition_location,
-        );
+        let condition = self.add_node(loop_label(self.source, statement), "loop", statement);
+        self.set_loop_metadata(&condition, statement);
         let after = self.add_node_at(
             "Continue".to_owned(),
             "merge",
@@ -436,11 +478,14 @@ impl<'a> GraphBuilder<'a> {
         if incoming.is_empty() {
             return Vec::new();
         }
-        let condition = statement
-            .child_by_field_name("condition")
+        let condition_node = statement.child_by_field_name("condition");
+        let condition = condition_node
             .map(|node| condition_text(self.source, node))
             .unwrap_or_else(|| "switch".to_owned());
         let decision = self.add_node(condition, "decision", statement);
+        if let Some(condition) = condition_node {
+            self.set_header_identity(&decision, condition.start_byte(), condition.end_byte());
+        }
         self.connect(&incoming, &decision);
         let after = self.add_node_at(
             "Continue".to_owned(),
@@ -548,23 +593,64 @@ impl<'a> GraphBuilder<'a> {
     }
 }
 
+#[derive(Clone)]
+struct DefinedFunction<'tree> {
+    node: Node<'tree>,
+    info: FunctionInfo,
+    unqualified_name: String,
+}
+
 pub fn inspect(source: String) -> Vec<FunctionInfo> {
     let Ok(tree) = parse(&source) else {
         return Vec::new();
     };
-    let mut functions = Vec::new();
-    collect_nodes(tree.root_node(), "function_definition", &mut |node| {
-        let declarator = node.child_by_field_name("declarator");
-        let name = declarator
-            .and_then(|node| function_name(&source, node))
-            .unwrap_or_else(|| "anonymous".to_owned());
-        functions.push(FunctionInfo {
-            id: node.start_byte().to_string(),
-            name,
-            line: node.start_position().row + 1,
-        });
-    });
-    functions
+    function_definitions(&source, tree.root_node())
+        .into_iter()
+        .map(|definition| definition.info)
+        .collect()
+}
+
+pub fn function_references(source: String) -> Vec<FunctionReference> {
+    let Ok(tree) = parse(&source) else {
+        return Vec::new();
+    };
+    let definitions = function_definitions(&source, tree.root_node());
+    let mut references = Vec::new();
+
+    for source_definition in &definitions {
+        let Some(body) = source_definition.node.child_by_field_name("body") else {
+            continue;
+        };
+        let mut calls = Vec::new();
+        collect_call_nodes(body, &mut calls);
+        for call in calls {
+            let Some(label) = static_call_name(&source, call) else {
+                continue;
+            };
+            let candidates = definitions
+                .iter()
+                .filter(|definition| {
+                    if label.contains("::") {
+                        definition.info.qualified_name == label
+                    } else {
+                        definition.unqualified_name == label
+                    }
+                })
+                .collect::<Vec<_>>();
+            if candidates.len() != 1 {
+                continue;
+            }
+            let reference = FunctionReference {
+                source: source_definition.info.id.clone(),
+                target: candidates[0].info.id.clone(),
+                label,
+            };
+            if !references.contains(&reference) {
+                references.push(reference);
+            }
+        }
+    }
+    references
 }
 
 pub fn analyze(
@@ -591,7 +677,7 @@ pub fn analyze(
         .and_then(|node| function_name(&source, node))
         .unwrap_or_else(|| "Function".to_owned());
 
-    let mut builder = GraphBuilder::new(&source);
+    let mut builder = GraphBuilder::new(&source, tree.root_node());
     let start = builder.add_node_at(
         name,
         "start",
@@ -635,6 +721,119 @@ fn parse(source: &str) -> Result<Tree, String> {
     parser
         .parse(source, None)
         .ok_or_else(|| "Could not parse C++ source".to_owned())
+}
+
+fn function_definitions<'tree>(source: &str, root: Node<'tree>) -> Vec<DefinedFunction<'tree>> {
+    let mut nodes = Vec::new();
+    collect_function_nodes(root, &mut nodes);
+    nodes
+        .into_iter()
+        .map(|node| {
+            let declarator = node.child_by_field_name("declarator");
+            let name = declarator
+                .and_then(|declarator| function_name(source, declarator))
+                .unwrap_or_else(|| "anonymous".to_owned());
+            let scope = lexical_scope(source, node);
+            let raw_symbol = compact_symbol(&name);
+            let scope_prefix = scope.join("::");
+            let qualified_name = if raw_symbol.starts_with("::") {
+                raw_symbol.trim_start_matches(':').to_owned()
+            } else if scope_prefix.is_empty()
+                || raw_symbol == scope_prefix
+                || raw_symbol.starts_with(&(scope_prefix.clone() + "::"))
+            {
+                raw_symbol
+            } else {
+                format!("{scope_prefix}::{raw_symbol}")
+            };
+            let declarator_tokens = declarator
+                .map(|declarator| canonical_tokens(source, declarator))
+                .unwrap_or_default();
+            let identity_material = format!(
+                "scope\0{}\0qualified\0{}\0declarator\0{}",
+                scope.join("::"),
+                qualified_name,
+                declarator_tokens
+            );
+            let info = FunctionInfo {
+                id: node.start_byte().to_string(),
+                identity: format!("function-{}", stable_fingerprint(&identity_material)),
+                name,
+                qualified_name: qualified_name.clone(),
+                line: node.start_position().row + 1,
+            };
+            let unqualified_name = qualified_name
+                .rsplit("::")
+                .next()
+                .unwrap_or(&qualified_name)
+                .to_owned();
+            DefinedFunction {
+                node,
+                info,
+                unqualified_name,
+            }
+        })
+        .collect()
+}
+
+fn collect_function_nodes<'tree>(node: Node<'tree>, functions: &mut Vec<Node<'tree>>) {
+    if node.kind() == "function_definition" {
+        functions.push(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_function_nodes(child, functions);
+    }
+}
+
+fn lexical_scope(source: &str, node: Node<'_>) -> Vec<String> {
+    let mut scope = Vec::new();
+    let mut ancestor = node.parent();
+    while let Some(current) = ancestor {
+        if matches!(
+            current.kind(),
+            "namespace_definition" | "class_specifier" | "struct_specifier" | "union_specifier"
+        ) {
+            let name = current
+                .child_by_field_name("name")
+                .map(|name| compact_symbol(&text_without_comments(source, name)))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "(anonymous)".to_owned());
+            scope.push(name);
+        }
+        ancestor = current.parent();
+    }
+    scope.reverse();
+    scope
+}
+
+fn compact_symbol(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
+fn collect_call_nodes<'tree>(node: Node<'tree>, calls: &mut Vec<Node<'tree>>) {
+    if node.kind() == "call_expression" {
+        calls.push(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() != "function_definition" {
+            collect_call_nodes(child, calls);
+        }
+    }
+}
+
+fn static_call_name(source: &str, call: Node<'_>) -> Option<String> {
+    let function = call.child_by_field_name("function")?;
+    if !matches!(function.kind(), "identifier" | "qualified_identifier") {
+        return None;
+    }
+    let name = compact_symbol(&text_without_comments(source, function))
+        .trim_start_matches("::")
+        .to_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 fn function_name(source: &str, declarator: Node<'_>) -> Option<String> {
@@ -777,6 +976,71 @@ fn find_unsupported_control(node: Node<'_>, root: bool) -> Option<(usize, &'stat
 
 fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
     source.get(node.byte_range()).unwrap_or_default()
+}
+
+fn source_identity(
+    source: &str,
+    root: Node<'_>,
+    kind: &str,
+    start_byte: usize,
+    end_byte: usize,
+) -> String {
+    let mut tokens = String::new();
+    append_canonical_tokens(source, root, start_byte, end_byte, &mut tokens);
+    format!("node-{}", stable_fingerprint(&format!("{kind}\0{tokens}")))
+}
+
+fn canonical_tokens(source: &str, node: Node<'_>) -> String {
+    let mut tokens = String::new();
+    append_canonical_tokens(
+        source,
+        node,
+        node.start_byte(),
+        node.end_byte(),
+        &mut tokens,
+    );
+    tokens
+}
+
+fn append_canonical_tokens(
+    source: &str,
+    node: Node<'_>,
+    start_byte: usize,
+    end_byte: usize,
+    output: &mut String,
+) {
+    if node.kind() == "comment" || node.end_byte() <= start_byte || node.start_byte() >= end_byte {
+        return;
+    }
+    if node.child_count() == 0 {
+        if node.start_byte() < start_byte || node.end_byte() > end_byte {
+            return;
+        }
+        let text = node_text(source, node);
+        output.push_str(&node.kind().len().to_string());
+        output.push(':');
+        output.push_str(node.kind());
+        output.push(':');
+        output.push_str(&text.len().to_string());
+        output.push(':');
+        output.push_str(text);
+        output.push(';');
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        append_canonical_tokens(source, child, start_byte, end_byte, output);
+    }
+}
+
+fn stable_fingerprint(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn normalize(text: &str) -> String {
@@ -1256,5 +1520,173 @@ void work() {
         let graph = analyze(source, id, false).unwrap();
         assert!(graph.nodes.iter().any(|node| node.kind == "decision"));
         assert!(graph.nodes.iter().any(|node| node.kind == "return"));
+    }
+
+    #[test]
+    fn function_and_node_identities_survive_comment_removal() {
+        let commented = r#"
+// file comment
+namespace tools {
+int work(/* parameter */ int value) {
+    // body comment
+    int adjusted = value + 1;
+    return adjusted;
+}
+}
+"#
+        .to_owned();
+        let plain = r#"
+namespace tools {
+int work(int value) {
+    int adjusted = value + 1;
+    return adjusted;
+}
+}
+"#
+        .to_owned();
+        let commented_function = inspect(commented.clone()).remove(0);
+        let plain_function = inspect(plain.clone()).remove(0);
+        assert_ne!(commented_function.id, plain_function.id);
+        assert_eq!(commented_function.identity, plain_function.identity);
+        assert_eq!(commented_function.qualified_name, "tools::work");
+
+        let commented_graph = analyze(commented, commented_function.id, false).unwrap();
+        let plain_graph = analyze(plain, plain_function.id, false).unwrap();
+        assert_eq!(commented_graph.nodes.len(), plain_graph.nodes.len());
+        assert_eq!(
+            commented_graph
+                .nodes
+                .iter()
+                .map(|node| (&node.source_identity, &node.header_identity))
+                .collect::<Vec<_>>(),
+            plain_graph
+                .nodes
+                .iter()
+                .map(|node| (&node.source_identity, &node.header_identity))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn changing_one_grouped_process_changes_one_box_identity() {
+        let before = "int work() { int value = 1; use(value); return value; }".to_owned();
+        let after = "int work() { int value = 2; use(value); return value; }".to_owned();
+        let before_function = inspect(before.clone()).remove(0);
+        let after_function = inspect(after.clone()).remove(0);
+        assert_eq!(before_function.identity, after_function.identity);
+        let before_id = before_function.id;
+        let after_id = after_function.id;
+        let before_graph = analyze(before, before_id, false).unwrap();
+        let after_graph = analyze(after, after_id, false).unwrap();
+        let changed = before_graph
+            .nodes
+            .iter()
+            .zip(&after_graph.nodes)
+            .filter(|(left, right)| left.source_identity != right.source_identity)
+            .collect::<Vec<_>>();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(changed[0].0.kind, "process");
+        assert_eq!(changed[0].0.start_byte, 13);
+        assert!(changed[0].0.end_byte > changed[0].0.start_byte);
+    }
+
+    #[test]
+    fn loop_identity_owns_body_and_header_identity_owns_condition() {
+        let before = "void work() { while (ready()) { use(1); } }".to_owned();
+        let after = "void work() { while (ready()) { use(2); } }".to_owned();
+        let before_id = inspect(before.clone())[0].id.clone();
+        let after_id = inspect(after.clone())[0].id.clone();
+        let before_graph = analyze(before, before_id, false).unwrap();
+        let after_graph = analyze(after, after_id, false).unwrap();
+        let before_loop = before_graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "loop")
+            .unwrap();
+        let after_loop = after_graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "loop")
+            .unwrap();
+        assert_ne!(before_loop.source_identity, after_loop.source_identity);
+        assert_eq!(before_loop.header_identity, after_loop.header_identity);
+        assert_eq!(before_loop.loop_condition.as_deref(), Some("ready()"));
+
+        let range_source =
+            "void each(auto values) { for (auto value : values) use(value); }".to_owned();
+        let range_id = inspect(range_source.clone())[0].id.clone();
+        let range_graph = analyze(range_source, range_id, false).unwrap();
+        let range_loop = range_graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "loop")
+            .unwrap();
+        assert_eq!(range_loop.loop_condition, None);
+        assert!(range_loop.header_identity.is_some());
+
+        let for_source =
+            "void count() { for (int index = 0; index < 3; ++index) use(index); }".to_owned();
+        let for_id = inspect(for_source.clone())[0].id.clone();
+        let for_graph = analyze(for_source, for_id, false).unwrap();
+        let for_loop = for_graph
+            .nodes
+            .iter()
+            .find(|node| node.kind == "loop")
+            .unwrap();
+        assert_eq!(for_loop.loop_condition.as_deref(), Some("index < 3"));
+    }
+
+    #[test]
+    fn function_references_resolve_unique_static_names_only() {
+        let source = r#"
+namespace alpha { void ping() {} }
+namespace beta { void ping() {} }
+void unique() {}
+void overloaded(int value) {}
+void overloaded(double value) {}
+void caller() {
+    alpha::ping();
+    ping();
+    unique();
+    overloaded(1);
+    object.ping();
+}
+"#
+        .to_owned();
+        let functions = inspect(source.clone());
+        let caller = functions
+            .iter()
+            .find(|function| function.qualified_name == "caller")
+            .unwrap();
+        let alpha_ping = functions
+            .iter()
+            .find(|function| function.qualified_name == "alpha::ping")
+            .unwrap();
+        let unique = functions
+            .iter()
+            .find(|function| function.qualified_name == "unique")
+            .unwrap();
+        let overloads = functions
+            .iter()
+            .filter(|function| function.qualified_name == "overloaded")
+            .collect::<Vec<_>>();
+        assert_eq!(overloads.len(), 2);
+        assert_ne!(overloads[0].identity, overloads[1].identity);
+
+        let references = function_references(source);
+        assert_eq!(references.len(), 2);
+        assert!(references.contains(&FunctionReference {
+            source: caller.id.clone(),
+            target: alpha_ping.id.clone(),
+            label: "alpha::ping".to_owned(),
+        }));
+        assert!(references.contains(&FunctionReference {
+            source: caller.id.clone(),
+            target: unique.id.clone(),
+            label: "unique".to_owned(),
+        }));
+        assert!(!references
+            .iter()
+            .any(|reference| { reference.label == "ping" || reference.label == "overloaded" }));
     }
 }

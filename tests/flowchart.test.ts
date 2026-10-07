@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { overviewGraph, simplifyGraph } from "../src/simplify";
+import { analyzeLoops, overviewGraph, simplifyGraph } from "../src/simplify";
 import { layoutGraph, NODE_WIDTH, nodeHeight, type RoutePoint } from "../src/layout";
 import { createSvgDocument } from "../src/exportSvg";
 import type { FlowGraph, FlowNode } from "../src/types";
@@ -49,6 +49,40 @@ assert(!overviewGraph(unsafe([node("n3", "return", "return x")], [["n2", "n3"]])
 assert(!overviewGraph(unsafe([node("n9", "end")], [["n2", "n9"]])).nodes.some((item) => item.shape === "subprocess"), "multiple exits must stay expanded");
 assert(!overviewGraph(unsafe([], [["n0", "n2"]])).nodes.some((item) => item.shape === "subprocess"), "outside body entry must stay expanded");
 assert(!overviewGraph(unsafe([{ ...node("n3", "process"), end_byte: 90 }], [["n2", "n3"]])).nodes.some((item) => item.shape === "subprocess"), "partial source ranges must stay expanded");
+assert(!overviewGraph(unsafe([{ ...node("n7", "process"), start_byte: 5, end_byte: 20 }], [["n0", "n7"], ["n7", "n1"]])).nodes.some((item) => item.shape === "subprocess"), "left-boundary overlaps must stay expanded");
+
+const nestedInput = simplifyGraph(graph([
+  node("n0", "start"), { ...node("n1", "loop", "outer"), end_byte: 100 },
+  { ...node("n2", "loop", "inner"), start_byte: 30, end_byte: 70 },
+  { ...node("n3", "process", "inside"), start_byte: 40, end_byte: 45 },
+  { ...node("n4", "process", "after inner"), start_byte: 80, end_byte: 85 }, node("n9", "end", "End", 110),
+], [["n0", "n1"], ["n1", "n2", "Yes"], ["n2", "n3", "Yes"], ["n3", "n2", "Repeat"], ["n2", "n4", "No"], ["n4", "n1", "Repeat"], ["n1", "n9", "No"]]));
+const nestedSnapshot = JSON.stringify(nestedInput);
+assert.deepEqual(analyzeLoops(nestedInput).map(({ id, depth, parent_id, can_collapse }) => ({ id, depth, parent_id, can_collapse })), [
+  { id: "n1", depth: 0, parent_id: null, can_collapse: true },
+  { id: "n2", depth: 1, parent_id: "n1", can_collapse: true },
+]);
+const loopState = (value: FlowGraph) => value.nodes.filter((item) => item.loop_id).map((item) => [item.loop_id, item.loop_depth, item.loop_collapsed, item.loop_can_collapse]);
+assert.deepEqual(loopState(overviewGraph(nestedInput)), [["n1", 0, true, true]], "depth 0 collapses outer loops");
+assert.deepEqual(loopState(overviewGraph(nestedInput, { depth: 1 })), [["n1", 0, false, true], ["n2", 1, true, true]], "depth 1 expands outer loops");
+assert.deepEqual(loopState(overviewGraph(nestedInput, { depth: 2 })), [["n1", 0, false, true], ["n2", 1, false, true]], "depth 2 expands nested loops");
+assert.deepEqual(loopState(overviewGraph(nestedInput, { depth: null })), [["n1", 0, false, true], ["n2", 1, false, true]], "null expands all loops");
+assert.deepEqual(loopState(overviewGraph(nestedInput, { overrides: { n2: true } })), [["n1", 0, false, true], ["n2", 1, false, true]], "expanded descendant exposes ancestors");
+assert.deepEqual(loopState(overviewGraph(nestedInput, { depth: null, overrides: { n2: false } })), [["n1", 0, false, true], ["n2", 1, true, true]], "collapse override beats global depth");
+assert.equal(JSON.stringify(nestedInput), nestedSnapshot, "nested overview must not mutate expanded graph");
+const siblingInput = simplifyGraph(graph([
+  node("n0", "start"), { ...node("n1", "loop", "first"), end_byte: 40 }, node("n2", "process", "first body", 20),
+  { ...node("n5", "loop", "second", 50), end_byte: 80 }, node("n6", "process", "second body", 60), node("n9", "end", "End", 90),
+], [["n0", "n1"], ["n1", "n2", "Yes"], ["n2", "n1", "Repeat"], ["n1", "n5", "No"], ["n5", "n6", "Yes"], ["n6", "n5", "Repeat"], ["n5", "n9", "No"]]));
+assert.deepEqual(loopState(overviewGraph(siblingInput, { overrides: { n5: true } })), [["n1", 0, true, true], ["n5", 0, false, true]], "sibling overrides stay independent");
+const equalRangeInput = graph([
+  node("n0", "start"), { ...node("n1", "loop", "first"), end_byte: 70 },
+  { ...node("n2", "loop", "second"), start_byte: 10, end_byte: 70 }, node("n3", "process", "body", 30), node("n9", "end", "End", 90),
+], [["n0", "n1"], ["n1", "n2"], ["n2", "n3"], ["n3", "n1"], ["n1", "n9"]]);
+assert.deepEqual(analyzeLoops(equalRangeInput).map(({ id, parent_id, can_collapse }) => ({ id, parent_id, can_collapse })), [
+  { id: "n1", parent_id: null, can_collapse: false }, { id: "n2", parent_id: null, can_collapse: false },
+], "equal loop ranges are noncollapsible peers");
+assert.doesNotThrow(() => overviewGraph(equalRangeInput, { overrides: { n1: true, n2: true } }), "malformed loop metadata must not cycle");
 
 function verifyOverviewBoundaries(expanded: FlowGraph, overview: FlowGraph) {
   const ownership = new Map<string, FlowNode>();

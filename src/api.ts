@@ -24,7 +24,7 @@ export async function analyzeCpp(
 export async function saveDocument(
   name: string,
   contents: string,
-  extension: "cpp" | "svg" | "codeflow",
+  extension: "cpp" | "svg" | "png" | "codeflow",
 ): Promise<boolean> {
   const hasExtension = extension === "cpp"
     ? /\.(?:cpp|cc|cxx|h|hh|hpp|hxx)$/i.test(name)
@@ -33,8 +33,8 @@ export async function saveDocument(
   if (isTauri()) {
     return invoke<boolean>("save_document", { name: fileName, contents, extension });
   }
-  const mime = extension === "svg" ? "image/svg+xml" : "text/x-c++src;charset=utf-8";
-  const blob = new Blob([contents], { type: mime });
+  const mime = extension === "svg" ? "image/svg+xml" : extension === "png" ? "image/png" : "text/x-c++src;charset=utf-8";
+  const blob = extension === "png" ? await (await fetch(contents)).blob() : new Blob([contents], { type: mime });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -94,3 +94,20 @@ function previewGraph(source: string, includeComments: boolean): FlowGraph {
     diagnostics: ["Browser preview uses a simplified sample graph. Desktop builds use the C++ analyzer."],
   };
 }
+
+export type OpenedDocument = {name:string;contents:string;projectToken?:string|null;warning?:string|null;dirty?:boolean|null;sourceDirty?:boolean|null;projectDirty?:boolean|null};
+export type RecentProject = {id:string;name:string};
+export async function openDocument(): Promise<OpenedDocument|null> {return invoke('open_document');}
+export async function recentProjects(): Promise<RecentProject[]> {return isTauri()?invoke('recent_projects'):[];}
+export async function openRecentProject(id:string): Promise<OpenedDocument> {return invoke('open_recent_project',{id});}
+export async function saveProjectDocument(name:string,contents:string,projectToken:string|null): Promise<{saved:boolean;projectToken?:string;name?:string;warning?:string|null;dirty?:boolean|null;sourceDirty?:boolean|null;projectDirty?:boolean|null}> {
+  if(isTauri())return invoke('save_project_document',{name,contents,projectToken});
+  return {saved:await saveDocument(name,contents,'codeflow')};
+}
+
+let recoveryGeneration=0;
+export async function saveRecovery(contents:string,projectToken:string|null,dirty=true,sourceDirty=dirty,projectDirty=dirty):Promise<void>{if(isTauri())await invoke('save_recovery',{contents,projectToken,dirty,sourceDirty,projectDirty,generation:++recoveryGeneration});}
+export async function readRecovery():Promise<OpenedDocument|null>{return isTauri()?invoke('read_recovery'):null;}
+
+export type FunctionReference={source:string;target:string;label:string};
+export async function functionReferences(source:string):Promise<FunctionReference[]>{return isTauri()?invoke('function_references',{source}):[];}

@@ -27,8 +27,11 @@ export function nodeContentHeight(node: FlowNode): number {
   const extra = (lines: string[]) => lines.length ? 10 + lines.length * COMMENT_LINE_HEIGHT : 0;
   const content = labelLines.length * LABEL_LINE_HEIGHT + extra(commentLines) + extra(annotationLines);
   const shape = flowShape(node);
-  return shape === "decision" ? Math.max(112, content * 2 + 40) : shape === "terminator" ? Math.max(64, Math.ceil(content * 1.6 + 24)) : Math.max(52, content + 26);
+  const base=shape === "decision" ? Math.max(112, content * 2 + 40) : shape === "terminator" ? Math.max(64, Math.ceil(content * 1.6 + 24)) : Math.max(52, content + 26);
+  return base + markerHeight(node);
 }
+
+export function markerHeight(node:FlowNode):number {return node.kind==='loop'||node.loop_collapsed||node.flagged?22:0;}
 
 function wrapLine(line: string, columns: number): string[] {
   if (!line) return [""];

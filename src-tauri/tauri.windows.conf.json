@@ -1,0 +1,16 @@
+{
+  "app": {
+    "windows": [
+      {
+        "title": "CodeFlow",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 620,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "noRedirectionBitmap": true
+      }
+    ]
+  }
+}

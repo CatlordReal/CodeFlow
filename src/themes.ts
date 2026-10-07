@@ -14,7 +14,7 @@ export type ThemeId =
   | "sunset"
   | "dusk";
 
-export type ThemeSelection = ThemeId | "system";
+export type ThemeSelection = ThemeId | "system" | "wallpaper";
 
 export type ThemeColors = {
   bg: string;
@@ -36,12 +36,52 @@ export type ThemeColors = {
 };
 
 export type AppTheme = {
-  id: ThemeId;
+  id: ThemeId | "wallpaper";
   name: string;
   family: "Basic" | "Catppuccin" | "Solar / Sand";
   scheme: "light" | "dark";
   colors: ThemeColors;
+  diagram: DiagramColors;
 };
+
+export type DiagramColors = {
+  processFill: string;
+  processStroke: string;
+  decisionFill: string;
+  decisionStroke: string;
+  ioFill: string;
+  ioStroke: string;
+  terminatorFill: string;
+  terminatorStroke: string;
+  subprocessFill: string;
+  subprocessStroke: string;
+};
+
+type DiagramAccents = Pick<DiagramColors, "processStroke" | "decisionStroke" | "ioStroke" | "terminatorStroke" | "subprocessStroke">;
+
+function mixHex(foreground: string, background: string, amount: number): string {
+  const channel = (value: string, offset: number) => Number.parseInt(value.slice(offset, offset + 2), 16);
+  const mixed = [1, 3, 5].map((offset) => Math.round(channel(foreground, offset) * amount + channel(background, offset) * (1 - amount)));
+  return `#${mixed.map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+}
+
+export function diagramColors(colors: ThemeColors, accents?: DiagramAccents): DiagramColors {
+  const strokes = accents ?? {
+    processStroke: colors.accent,
+    decisionStroke: colors.warm,
+    ioStroke: colors.success,
+    terminatorStroke: colors.danger,
+    subprocessStroke: colors.lineStrong,
+  };
+  return {
+    ...strokes,
+    processFill: mixHex(strokes.processStroke, colors.panel2, 0.16),
+    decisionFill: mixHex(strokes.decisionStroke, colors.panel2, 0.16),
+    ioFill: mixHex(strokes.ioStroke, colors.panel2, 0.16),
+    terminatorFill: mixHex(strokes.terminatorStroke, colors.panel2, 0.16),
+    subprocessFill: mixHex(strokes.subprocessStroke, colors.panel2, 0.16),
+  };
+}
 
 const light = (values: Partial<ThemeColors> & Pick<ThemeColors, "bg" | "panel" | "panel2" | "elevated" | "line" | "lineStrong" | "text" | "muted" | "accent" | "accentText" | "accentHover" | "accentSoft" | "danger" | "success" | "warm">): ThemeColors => ({
   shadow: "rgba(45, 38, 32, .18)",
@@ -53,7 +93,7 @@ const dark = (values: Partial<ThemeColors> & Pick<ThemeColors, "bg" | "panel" | 
   ...values,
 });
 
-export const THEMES: readonly AppTheme[] = [
+const BASE_THEMES = [
   {
     id: "light", name: "Light", family: "Basic", scheme: "light",
     colors: light({ bg: "#f5f7f3", panel: "#ffffff", panel2: "#edf1ea", elevated: "#e0e6dc", line: "#cdd6c8", lineStrong: "#a9b7a3", text: "#20261e", muted: "#5d6958", accent: "#386b22", accentText: "#ffffff", accentHover: "#2d591b", accentSoft: "#dcebd4", danger: "#a8392c", success: "#39702d", warm: "#9a591d" }),
@@ -104,16 +144,30 @@ export const THEMES: readonly AppTheme[] = [
   },
 ] as const;
 
+const CATPPUCCIN_DIAGRAM: Partial<Record<ThemeId, DiagramAccents>> = {
+  "catppuccin-latte": { processStroke: "#1e66f5", decisionStroke: "#8839ef", ioStroke: "#179299", terminatorStroke: "#fe640b", subprocessStroke: "#40a02b" },
+  "catppuccin-frappe": { processStroke: "#8caaee", decisionStroke: "#ca9ee6", ioStroke: "#81c8be", terminatorStroke: "#ef9f76", subprocessStroke: "#a6d189" },
+  "catppuccin-macchiato": { processStroke: "#8aadf4", decisionStroke: "#c6a0f6", ioStroke: "#8bd5ca", terminatorStroke: "#f5a97f", subprocessStroke: "#a6da95" },
+  "catppuccin-mocha": { processStroke: "#89b4fa", decisionStroke: "#cba6f7", ioStroke: "#94e2d5", terminatorStroke: "#fab387", subprocessStroke: "#a6e3a1" },
+};
+
+export const THEMES: readonly AppTheme[] = BASE_THEMES.map((theme) => ({
+  ...theme,
+  diagram: diagramColors(theme.colors, CATPPUCCIN_DIAGRAM[theme.id]),
+}));
+
 export const THEME_GROUPS = ["Basic", "Catppuccin", "Solar / Sand"] as const;
 
-const themeById = new Map<ThemeId, AppTheme>(THEMES.map((theme) => [theme.id, theme]));
+const themeById = new Map<ThemeId, AppTheme>(THEMES.map((theme) => [theme.id as ThemeId, theme]));
 
 export function isThemeSelection(value: string | null): value is ThemeSelection {
-  return value === "system" || themeById.has(value as ThemeId);
+  return value === "system" || value === "wallpaper" || themeById.has(value as ThemeId);
 }
 
 export function resolveTheme(selection: ThemeSelection, prefersDark: boolean): AppTheme {
-  const id: ThemeId = selection === "system" ? (prefersDark ? "dark" : "light") : selection;
+  const id: ThemeId = selection === "system" || selection === "wallpaper"
+    ? (prefersDark ? "dark" : "light")
+    : selection;
   return themeById.get(id) ?? themeById.get("dark")!;
 }
 
@@ -123,5 +177,9 @@ export function applyTheme(theme: AppTheme, root: HTMLElement = document.documen
   for (const [name, value] of Object.entries(theme.colors)) {
     const token = name === "panel2" ? "panel-2" : name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
     root.style.setProperty(`--${token}`, value);
+  }
+  for (const [name, value] of Object.entries(theme.diagram)) {
+    const token = name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+    root.style.setProperty(`--diagram-${token}`, value);
   }
 }

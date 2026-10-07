@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {appendRevision,defaultChartState,initialHistory} from '../src/history';
+import {readProject} from '../src/presentation';
+let history=initialHistory(defaultChartState());
+history=appendRevision(history,{...defaultChartState(),mode:'code'},'Code');
+const codeId=history.active;
+history={...history,active:'revision-0'};
+history=appendRevision(history,{...defaultChartState(),showHiddenBoxes:true},'Alternate');
+assert.equal(history.revisions[2].parent,'revision-0');assert.equal(history.revisions[1].id,codeId);
+const project={format:'codeflow',version:1,source:'int sum(){return 1;}',fileName:'sum.cpp',...history.revisions[2].state,history};
+assert.deepEqual(readProject(JSON.stringify(project)).history,history);
+assert.throws(()=>readProject(JSON.stringify({...project,history:{...history,active:'missing'}})));
+assert.throws(()=>readProject(JSON.stringify({...project,history:{...history,revisions:[history.revisions[2]]}})));
+for(let i=0;i<501;i++)history=appendRevision(history,defaultChartState(),'Change');
+assert.equal(history.revisions.length,500);
+const ids=new Set(history.revisions.map(r=>r.id));assert.ok(history.revisions.every(r=>!r.parent||ids.has(r.parent)));
+console.log('PASS: branching history survives saves and bounds retained revisions');
