@@ -6,7 +6,6 @@
 .flow-symbol--io { --flow-node-bg: var(--diagram-io-fill); --flow-node-border: var(--diagram-io-stroke); }
 .flow-symbol--terminator { --flow-node-bg: var(--diagram-terminator-fill); --flow-node-border: var(--diagram-terminator-stroke); }
 .flow-symbol--subprocess { --flow-node-bg: var(--diagram-subprocess-fill); --flow-node-border: var(--diagram-subprocess-stroke); }
-.flow-symbol[data-loop] { --flow-node-border: var(--diagram-subprocess-stroke); }
 .flow-symbol[data-unmodified] > .flow-symbol__outline:not(.flow-symbol__subprocess) { stroke-dasharray: 7 4; }
 .flow-symbol:hover .flow-symbol__outline { stroke: var(--muted); }
 .flow-symbol.is-selected .flow-symbol__outline { stroke: var(--accent); stroke-width: 2.5; }
@@ -15,7 +14,7 @@
 .flow-symbol--io .flow-symbol__content { width: calc(100% - 58px); }
 .flow-symbol--terminator .flow-symbol__content { width: 78%; }
 .flow-symbol__subprocess { fill: none; }
-.flow-symbol__loop-marker { position: absolute; z-index: 1; top: 7px; left: 50%; transform: translateX(-50%); padding: 1px 7px; border: 1px solid var(--diagram-subprocess-stroke); border-radius: 999px; color: var(--text); background: var(--diagram-subprocess-fill); font: 700 9px/13px ui-sans-serif, system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; }
+.flow-symbol__loop-marker { position: absolute; z-index: 1; top: 7px; left: 50%; transform: translateX(-50%); padding: 1px 7px; border: 1px solid var(--flow-node-border); border-radius: 999px; color: var(--text); background: var(--flow-node-bg); font: 700 9px/13px ui-sans-serif, system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; }
 .flow-symbol__flag-marker { position: absolute; z-index: 1; top: 7px; right: 10px; padding: 1px 7px; border: 1px solid var(--diagram-terminator-stroke); border-radius: 999px; color: var(--text); background: var(--diagram-terminator-fill); font: 700 9px/13px ui-sans-serif, system-ui, sans-serif; letter-spacing: .07em; text-transform: uppercase; }
 .flow-symbol__label { color: var(--text); font: 500 12px/18px ui-monospace, SFMono-Regular, Consolas, monospace; }
 .mode-natural .flow-symbol__label { font: 500 16px/18px ui-sans-serif, system-ui, sans-serif; }

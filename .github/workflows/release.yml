@@ -45,11 +45,11 @@ jobs:
           tagName: v__VERSION__
           releaseName: CodeFlow v__VERSION__
           releaseBody: |
-            C++ flowcharts for Windows 10/11 x64, with individual loop expansion, persistent projects and history, file maps, colour PNG export, wallpaper themes, and reviewed local AI suggestions.
+            C++ flowcharts for Windows 10/11 x64 and Linux x86_64, with consistent Catppuccin palettes, persistent projects and history, file maps, colour PNG export, and reviewed local AI suggestions.
 
-            Download the setup.exe installer below. Future updates are available from the app's Check updates button.
+            Download the setup.exe installer for Windows or AppImage for Linux. On CachyOS, install fuse2 if needed and make the AppImage executable. Keep the AppImage in a user-writable directory. Future signed updates are available from Check updates.
 
-            The installer is not Authenticode signed; Windows may show an unknown publisher notice. Update packages are cryptographically signed and verified by CodeFlow.
+            The Windows installer is not Authenticode signed, so Windows may show an unknown publisher notice. Update packages are cryptographically signed and verified by CodeFlow.
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: true

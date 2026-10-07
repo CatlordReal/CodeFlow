@@ -1,0 +1,176 @@
+name: Linux release
+
+on:
+  workflow_run:
+    workflows: ["Windows release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag to extend
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: linux-release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.repository.full_name == github.repository)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve and verify release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)"
+          test "$version" = "$tauri_version" && test "$version" = "$cargo_version" || {
+            echo "Version mismatch: package.json=$version tauri.conf.json=$tauri_version Cargo.toml=$cargo_version." >&2
+            exit 1
+          }
+          tag="${REQUESTED_TAG:-v$version}"
+          test "$tag" = "v$version" || {
+            echo "Release tag '$tag' must match package version 'v$version'." >&2
+            exit 1
+          }
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)" || {
+            echo "Release tag '$tag' does not point to checked-out commit." >&2
+            exit 1
+          }
+          is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
+          test "$is_draft" = true || {
+            echo "Release '$tag' must exist as a draft before Linux assets are added." >&2
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Tauri and runtime-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential \
+            curl \
+            dbus-x11 \
+            file \
+            libayatana-appindicator3-dev \
+            libfuse2 \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            webkit2gtk-driver \
+            wget \
+            xvfb
+          cargo install tauri-driver --locked
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Build signed AppImage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri build -- --bundles appimage
+      - name: Locate signed Linux artifacts
+        id: artifacts
+        run: |
+          mapfile -t appimages < <(find src-tauri/target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage')
+          test "${#appimages[@]}" -eq 1 || {
+            echo "Expected one AppImage, found ${#appimages[@]}." >&2
+            exit 1
+          }
+          appimage="${appimages[0]}"
+          signature="$appimage.sig"
+          test -s "$signature" || {
+            echo "Missing updater signature '$signature'." >&2
+            exit 1
+          }
+          echo "appimage=$appimage" >> "$GITHUB_OUTPUT"
+          echo "appimage_name=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
+          echo "signature=$signature" >> "$GITHUB_OUTPUT"
+      - name: Launch AppImage and capture runtime
+        env:
+          APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          chmod +x "$APPIMAGE"
+          mkdir -p output
+          bootstrap=()
+          if [ "$RELEASE_VERSION" = "0.4.0" ]; then
+            bootstrap+=(--allow-bootstrap-updater)
+          fi
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a -s '-screen 0 1440x900x24' \
+            python3 .github/scripts/linux-smoke.py "$APPIMAGE" \
+              --output output/linux-smoke "${bootstrap[@]}"
+      - name: Upload Linux runtime proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codeflow-linux-smoke
+          path: output/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Add Linux artifacts and preserve updater platforms
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
+          APPIMAGE_NAME: ${{ steps.artifacts.outputs.appimage_name }}
+          SIGNATURE: ${{ steps.artifacts.outputs.signature }}
+        run: |
+          mkdir -p updater
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir updater
+          cp updater/latest.json updater/latest.before.json
+          export UPDATE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APPIMAGE_NAME}"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'updater/latest.json';
+          const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (manifest.version?.replace(/^v/, '') !== process.env.RELEASE_VERSION) {
+            throw new Error(`latest.json version '${manifest.version}' does not match '${process.env.RELEASE_VERSION}'.`);
+          }
+          if (!manifest.platforms?.['windows-x86_64']) {
+            throw new Error("Existing latest.json has no 'windows-x86_64' updater platform.");
+          }
+          const before = JSON.stringify(manifest.platforms);
+          const linux = {
+            signature: fs.readFileSync(process.env.SIGNATURE, 'utf8').trim(),
+            url: process.env.UPDATE_URL,
+          };
+          manifest.platforms['linux-x86_64'] = linux;
+          manifest.platforms['linux-x86_64-appimage'] = linux;
+          for (const [key, value] of Object.entries(JSON.parse(before))) {
+            if (!key.startsWith('linux-x86_64') && JSON.stringify(manifest.platforms[key]) !== JSON.stringify(value)) {
+              throw new Error(`Updater platform '${key}' changed while adding Linux.`);
+            }
+          }
+          fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          gh release upload "$RELEASE_TAG" "$APPIMAGE" "$SIGNATURE" updater/latest.json --clobber

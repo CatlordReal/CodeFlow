@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Draft release tag to verify
         required: true
-        default: v0.3.2
+        default: v0.4.0
 
 permissions:
   contents: write # GitHub requires push access to read unpublished draft releases.

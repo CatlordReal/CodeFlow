@@ -104,19 +104,19 @@ const BASE_THEMES = [
   },
   {
     id: "catppuccin-latte", name: "Latte", family: "Catppuccin", scheme: "light",
-    colors: light({ bg: "#eff1f5", panel: "#e6e9ef", panel2: "#dce0e8", elevated: "#ccd0da", line: "#bcc0cc", lineStrong: "#9ca0b0", text: "#4c4f69", muted: "#5c5f77", accent: "#7732d5", accentText: "#ffffff", accentHover: "#6528b8", accentSoft: "#e2d6f5", danger: "#d20f39", success: "#327e23", warm: "#c95008" }),
+    colors: light({ bg: "#eff1f5", panel: "#e6e9ef", panel2: "#dce0e8", elevated: "#ccd0da", line: "#bcc0cc", lineStrong: "#9ca0b0", text: "#4c4f69", muted: "#5c5f77", accent: "#8839ef", accentText: "#eff1f5", accentHover: "#8839ef", accentSoft: "#ccd0da", danger: "#d20f39", success: "#40a02b", warm: "#fe640b" }),
   },
   {
     id: "catppuccin-frappe", name: "Frappé", family: "Catppuccin", scheme: "dark",
-    colors: dark({ bg: "#303446", panel: "#292c3c", panel2: "#414559", elevated: "#51576d", line: "#51576d", lineStrong: "#737994", text: "#c6d0f5", muted: "#b5bfe2", accent: "#ca9ee6", accentText: "#292c3c", accentHover: "#d8b8eb", accentSoft: "#4b405d", danger: "#e78284", success: "#a6d189", warm: "#ef9f76" }),
+    colors: dark({ bg: "#303446", panel: "#292c3c", panel2: "#414559", elevated: "#51576d", line: "#51576d", lineStrong: "#737994", text: "#c6d0f5", muted: "#b5bfe2", accent: "#ca9ee6", accentText: "#303446", accentHover: "#babbf1", accentSoft: "#414559", danger: "#e78284", success: "#a6d189", warm: "#ef9f76" }),
   },
   {
     id: "catppuccin-macchiato", name: "Macchiato", family: "Catppuccin", scheme: "dark",
-    colors: dark({ bg: "#24273a", panel: "#1e2030", panel2: "#363a4f", elevated: "#494d64", line: "#494d64", lineStrong: "#6e738d", text: "#cad3f5", muted: "#a5adcb", accent: "#c6a0f6", accentText: "#1e2030", accentHover: "#d4b8f8", accentSoft: "#463d63", danger: "#ed8796", success: "#a6da95", warm: "#f5a97f" }),
+    colors: dark({ bg: "#24273a", panel: "#1e2030", panel2: "#363a4f", elevated: "#494d64", line: "#494d64", lineStrong: "#6e738d", text: "#cad3f5", muted: "#a5adcb", accent: "#c6a0f6", accentText: "#24273a", accentHover: "#b7bdf8", accentSoft: "#363a4f", danger: "#ed8796", success: "#a6da95", warm: "#f5a97f" }),
   },
   {
     id: "catppuccin-mocha", name: "Mocha", family: "Catppuccin", scheme: "dark",
-    colors: dark({ bg: "#1e1e2e", panel: "#181825", panel2: "#313244", elevated: "#45475a", line: "#45475a", lineStrong: "#6c7086", text: "#cdd6f4", muted: "#a6adc8", accent: "#cba6f7", accentText: "#181825", accentHover: "#dabcf9", accentSoft: "#493e62", danger: "#f38ba8", success: "#a6e3a1", warm: "#fab387" }),
+    colors: dark({ bg: "#1e1e2e", panel: "#181825", panel2: "#313244", elevated: "#45475a", line: "#45475a", lineStrong: "#6c7086", text: "#cdd6f4", muted: "#a6adc8", accent: "#cba6f7", accentText: "#1e1e2e", accentHover: "#b4befe", accentSoft: "#313244", danger: "#f38ba8", success: "#a6e3a1", warm: "#fab387" }),
   },
   {
     id: "sand", name: "Sand", family: "Solar / Sand", scheme: "light",

@@ -8,6 +8,17 @@ Windows 10/11 x64 is the initial release target. Download the `setup.exe` instal
 
 The Windows installer is not Authenticode signed, so Windows may identify its publisher as unknown. Update packages use a separate application update signature and are verified before installation.
 
+## Install on CachyOS and Arch Linux
+
+Download the x86_64 `.AppImage` from [Releases](https://github.com/CatlordReal/CodeFlow/releases/latest), make it executable, then run it:
+
+```sh
+chmod +x CodeFlow_*_amd64.AppImage
+./CodeFlow_*_amd64.AppImage
+```
+
+Keep the AppImage in a user-writable directory so CodeFlow can install signed updates from **Check updates**. CachyOS requires FUSE to launch AppImages; install it if needed with `sudo pacman -S --needed fuse2`.
+
 ## Flowcharts
 
 Open a C++ source file or paste code into the editor, then choose a function. CodeFlow provides:
@@ -80,7 +91,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 
 The frontend is React/TypeScript with React Flow and ELK layout. `src-tauri/src/analyzer.rs` owns parsing and control-flow construction; its serializable graph contains source ranges, nodes, edges, and diagnostics. `src-tauri/src/lib.rs` provides the desktop command boundary. Parsing runs off the UI thread.
 
-## macOS and Linux
+## macOS and other Linux builds
 
 The source uses Tauri's native webview on Windows, macOS, and Linux. Parser and interface code do not depend on Windows APIs; Wallpaper mode and native compositor transparency are Windows-specific.
 
@@ -90,15 +101,15 @@ Build another platform on that platform:
 # macOS
 npm run tauri build -- --bundles app
 
-# Linux
+# Linux x86_64
 npm run tauri build -- --bundles appimage
 ```
 
-Current release automation targets Windows. Publishing macOS or Linux updates requires native build runners and updater artifacts. Public macOS distribution also requires Apple signing and notarization.
+Release automation publishes Windows x64 and Linux x86_64 artifacts. Public macOS distribution requires Apple signing and notarization.
 
 ## Release and update signing
 
-Update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, refresh both lockfiles, then push a matching `vX.Y.Z` tag. The workflow tests and builds an NSIS installer, signature, and `latest.json`, then creates a draft release. Review the artifacts before publishing the draft.
+Update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, refresh both lockfiles, then push a matching `vX.Y.Z` tag. The Windows workflow tests and creates a draft release with an NSIS installer, signature, and `latest.json`. After it succeeds, the Linux workflow builds and launches the AppImage under a native Linux webview, captures a runtime screenshot, uploads the signed AppImage, and adds its updater entries without replacing existing platforms. Review the artifacts and both runtime-proof workflow artifacts before publishing the draft.
 
 The signing key is stored in the repository's `TAURI_SIGNING_PRIVATE_KEY` Actions secret. A local backup belongs outside version control. Keep a secure backup: GitHub secrets cannot be retrieved, and losing the key prevents existing installations from trusting future updates. Never commit the private key. The public verification key is embedded in `tauri.conf.json`.
 
