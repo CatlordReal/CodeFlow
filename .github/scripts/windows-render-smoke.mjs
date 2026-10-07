@@ -74,7 +74,7 @@ int helper(int value) { return value * 2; }`;
   const overview = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural" });
   if (overview.subprocessCount !== 1) throw new Error("Loop overview must show one predefined-process box.");
   await selectValue(client, 'select[aria-label="Loop expansion depth"]', '1');
-  const depthOne = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
+  const depthOne = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1, minimumNodes: overview.nodeCount + 1 });
   if (depthOne.nodeCount <= overview.nodeCount) throw new Error("Loop depth 1 did not expand the outer loop.");
 
   const boxLabel = "Sum values";
@@ -264,7 +264,7 @@ async function setViewport(client, width, height) {
 }
 
 async function waitForGraph(client, end, expected = {}) {
-  const { comments = false, sourceToken = "firstPositive", mode, loopDepth, subprocesses } = expected;
+  const { comments = false, sourceToken = "firstPositive", mode, loopDepth, subprocesses, minimumNodes = 4 } = expected;
   let state;
   while (Date.now() < end) {
     state = await evaluate(client, `(() => {
@@ -295,7 +295,7 @@ async function waitForGraph(client, end, expected = {}) {
     const commentsReady = comments ? state.checked === true && state.commentCount > 0 : state.checked === false && state.commentCount === 0;
     const modeReady = mode === undefined || (state.mode === mode && state.labels.some((label) => mode === "code" ? /^return\b/.test(label) : /^Return\b/.test(label)));
     const expansionReady = (loopDepth === undefined || state.loopDepth === loopDepth) && (subprocesses === undefined || state.subprocessCount === subprocesses);
-    if (state.ready === "complete" && state.desktopRuntime && state.title.includes("CodeFlow") && state.sourceLoaded && state.nodeCount >= 4 && state.labels.includes("Start") && state.terminatorCount >= 2 && state.startTopmost && !state.busy && commentsReady && modeReady && expansionReady) return state;
+    if (state.ready === "complete" && state.desktopRuntime && state.title.includes("CodeFlow") && state.sourceLoaded && state.nodeCount >= minimumNodes && state.labels.includes("Start") && state.terminatorCount >= 2 && state.startTopmost && !state.busy && commentsReady && modeReady && expansionReady) return state;
     await delay(200);
   }
   throw new Error(`CodeFlow graph did not reach expected state: ${JSON.stringify(state)}.`);
