@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default window permissions",
   "windows": ["main"],
-  "permissions": ["core:default", "updater:default"]
+  "permissions": ["core:default", "core:window:allow-destroy", "dialog:allow-message", "updater:default"]
 }

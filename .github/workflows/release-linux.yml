@@ -91,7 +91,9 @@ jobs:
             patchelf \
             webkit2gtk-driver \
             wget \
-            xvfb
+            xvfb \
+            xdotool \
+            scrot
           cargo install tauri-driver --locked
       - run: npm ci
       - run: npm test

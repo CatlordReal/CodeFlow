@@ -2,6 +2,7 @@
 """Exercise the packaged Linux app through its real WebKitGTK WebDriver."""
 import argparse
 import base64
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,57 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+
+
+class XClientMessageData(ctypes.Union):
+    _fields_ = [("b", ctypes.c_char * 20),
+                ("s", ctypes.c_short * 10),
+                ("l", ctypes.c_long * 5)]
+
+
+class XClientMessageEvent(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_int),
+                ("serial", ctypes.c_ulong),
+                ("send_event", ctypes.c_int),
+                ("display", ctypes.c_void_p),
+                ("window", ctypes.c_ulong),
+                ("message_type", ctypes.c_ulong),
+                ("format", ctypes.c_int),
+                ("data", XClientMessageData)]
+
+
+class XEvent(ctypes.Union):
+    _fields_ = [("xclient", XClientMessageEvent),
+                ("pad", ctypes.c_long * 24)]
+
+
+def send_wm_delete(window):
+    x11 = ctypes.CDLL("libX11.so.6")
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    x11.XInternAtom.restype = ctypes.c_ulong
+    x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int,
+                               ctypes.c_long, ctypes.POINTER(XEvent)]
+    x11.XSendEvent.restype = ctypes.c_int
+    x11.XFlush.argtypes = [ctypes.c_void_p]
+    x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    display = x11.XOpenDisplay(None)
+    if not display:
+        raise RuntimeError("Could not open X display")
+    try:
+        event = XEvent()
+        event.xclient.type = 33  # ClientMessage
+        event.xclient.display = display
+        event.xclient.window = int(window)
+        event.xclient.message_type = x11.XInternAtom(display, b"WM_PROTOCOLS", 0)
+        event.xclient.format = 32
+        event.xclient.data.l[0] = x11.XInternAtom(display, b"WM_DELETE_WINDOW", 0)
+        if not x11.XSendEvent(display, int(window), 0, 0, ctypes.byref(event)):
+            raise RuntimeError("Could not send WM_DELETE_WINDOW")
+        x11.XFlush(display)
+    finally:
+        x11.XCloseDisplay(display)
 
 
 class Driver:
@@ -205,6 +257,59 @@ int total(const std::vector<int>& values) {
                     report["updaterBootstrap"] = True
                 else:
                     report["updaterBootstrap"] = False
+                # Send the same native WM_DELETE_WINDOW request as the titlebar X.
+                def visible_windows(title):
+                    result = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", title],
+                                            capture_output=True, text=True)
+                    return result.stdout.split()
+
+                def wait_dialog():
+                    deadline = time.monotonic() + 15
+                    while time.monotonic() < deadline:
+                        windows = visible_windows("^Close CodeFlow$")
+                        if windows:
+                            return windows[0]
+                        time.sleep(.1)
+                    raise RuntimeError("Native close confirmation did not appear")
+
+                main_window, = visible_windows("^CodeFlow$")
+                send_wm_delete(main_window)
+                dialog = wait_dialog()
+                subprocess.run(["scrot", "--overwrite", str(args.output / "linux-close-dialog.png")], check=True)
+                subprocess.run(["xdotool", "windowfocus", "--sync", dialog], check=True)
+                subprocess.run(["xdotool", "key", "Escape"], check=True)
+                deadline = time.monotonic() + 15
+                while visible_windows("^Close CodeFlow$"):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("Cancel did not dismiss native close confirmation")
+                    time.sleep(.1)
+                assert main_window in visible_windows("^CodeFlow$"), "Cancel closed the app"
+                driver.wait("Boolean(document.querySelector('.flow-symbol'))", "app remains open after Cancel")
+                report["closeCanceled"] = True
+
+                # Close immediately after editing, before the recovery debounce can run.
+                driver.script("document.querySelector('.flow-symbol--subprocess').closest('.react-flow__node').dispatchEvent(new MouseEvent('click', {bubbles:true}))")
+                driver.wait("Boolean(document.querySelector('textarea[aria-label=\"Box label\"]'))", "close recovery editor")
+                driver.set_value('textarea[aria-label="Box label"]', "Close button recovery")
+                driver.wait("document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === 'Close button recovery'", "latest close edit")
+                send_wm_delete(main_window)
+                dialog = wait_dialog()
+                subprocess.run(["xdotool", "windowfocus", "--sync", dialog], check=True)
+                subprocess.run(["xdotool", "key", "Return"], check=True)
+                deadline = time.monotonic() + 20
+                while main_window in visible_windows("^CodeFlow$"):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("Confirmed native close did not close the app")
+                    time.sleep(.1)
+                try:
+                    driver.close()
+                except (OSError, RuntimeError):
+                    driver.session = None
+                driver.start(executable)
+                driver.wait("document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === 'Close button recovery'", "confirmed-close recovery")
+                assert driver.script("return document.querySelector('textarea[aria-label=\"C++ source code\"]').value") == source
+                report["closeConfirmed"] = True
+                report["closeRecoveryRestored"] = True
                 (args.output / "linux-smoke.json").write_text(json.dumps(report, indent=2) + "\n")
                 print("PASS: packaged Linux runtime, four Catppuccin palettes, native recovery restart, updater request")
             finally:

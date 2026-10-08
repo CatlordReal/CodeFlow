@@ -27,6 +27,7 @@ import {mapFunction,matchFunctions,remapChart,type FunctionMapping} from './pres
 import type {ChartState} from './history';
 import { SAMPLE_CPP } from "./sample";
 import type { FlowGraph, FunctionInfo } from "./types";
+import { createDesktopCloseHandler } from "./close";
 
 const nodeTypes = { flowNode: FlowNodeCard };
 
@@ -76,6 +77,7 @@ export default function App() {
   const libraryLoaded=useRef(false);
   const projectToken=useRef<string|null>(null),documentSession=useRef(0),savingProject=useRef(false);
   const [recoveryReady,setRecoveryReady]=useState(false);
+  const recoveryReadyRef=useRef(false);
   const recoveryError=useRef(false);
   const dirtyRef=useRef(true);
   const sourceDirtyRef=useRef(true),projectDirtyRef=useRef(false);
@@ -109,11 +111,12 @@ export default function App() {
   const analyzeRequest = useRef(0);
   const updateRef = useRef<Update | null>(null);
   const updateDialogRef = useRef<HTMLElement>(null);
+  const closeHandlerRef = useRef<(() => Promise<void>) | null>(null);
   const sourceRef = useRef(source);
   const saveRequest = useRef(0);
   const replaceSource=useCallback((text:string)=>{inspectRequest.current++;analyzeRequest.current++;layoutRequest.current++;sourceRef.current=text;setSource(text);},[]);
   const isDesktop = "__TAURI_INTERNALS__" in window;
-  sourceRef.current = source;dirtyRef.current=isDirty||projectDirty;sourceDirtyRef.current=isDirty;projectDirtyRef.current=projectDirty;
+  sourceRef.current = source;dirtyRef.current=isDirty||projectDirty;sourceDirtyRef.current=isDirty;projectDirtyRef.current=projectDirty;recoveryReadyRef.current=recoveryReady;
   const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
   projectRef.current = {format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,labelSource:baseline.current?.session===documentSession.current?baseline.current.source:source};
   useEffect(()=>{document.documentElement.style.setProperty('--surface-opacity',`${100-transparency}%`);try{localStorage.setItem('codeflow.transparency',String(transparency));}catch{}},[transparency]);
@@ -132,13 +135,22 @@ export default function App() {
     window.addEventListener('beforeunload',warn); return ()=>window.removeEventListener('beforeunload',warn);
   },[isDirty,projectDirty,isDesktop]);
   useEffect(() => {
-    if(!isDesktop || (!isDirty && !projectDirty)) return;
+    if(!isDesktop) return;
     let disposed=false; let unlisten: (()=>void) | undefined;
-    void import('@tauri-apps/api/window').then(({getCurrentWindow})=>getCurrentWindow().onCloseRequested(event=>{
-      if(!window.confirm('Close CodeFlow with unsaved work? Save a project first to keep source, captions and notes.')) event.preventDefault();
-    })).then(remove=>{if(disposed) remove();else unlisten=remove;}).catch(()=>undefined);
-    return ()=>{disposed=true;unlisten?.();};
-  },[isDirty,projectDirty,isDesktop]);
+    void Promise.all([import('@tauri-apps/api/window'),import('@tauri-apps/plugin-dialog')]).then(([{getCurrentWindow},{confirm}])=>{
+      const appWindow=getCurrentWindow();
+      closeHandlerRef.current=createDesktopCloseHandler({
+        recoveryReady:()=>recoveryReadyRef.current,
+        snapshot:()=>({contents:JSON.stringify(projectRef.current),projectToken:projectToken.current,dirty:dirtyRef.current,sourceDirty:sourceDirtyRef.current,projectDirty:projectDirtyRef.current}),
+        confirm:()=>confirm('Close with unsaved work? Recovery will keep source, captions and notes.',{title:'Close CodeFlow',kind:'warning',okLabel:'Close',cancelLabel:'Keep open'}),
+        saveRecovery:snapshot=>saveRecovery(snapshot.contents,snapshot.projectToken,snapshot.dirty,snapshot.sourceDirty,snapshot.projectDirty),
+        destroy:()=>appWindow.destroy(),
+        showError:message=>setDocumentStatus({kind:'error',message}),
+      });
+      return appWindow.onCloseRequested(event=>{event.preventDefault();void closeHandlerRef.current?.();});
+    }).then(remove=>{if(disposed) remove();else unlisten=remove;}).catch(cause=>setDocumentStatus({kind:'error',message:`Close handler could not start: ${readError(cause)}`}));
+    return ()=>{disposed=true;closeHandlerRef.current=null;unlisten?.();};
+  },[isDesktop]);
 
   useEffect(() => {
     if(!recoveryReady)return;

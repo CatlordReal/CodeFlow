@@ -1,7 +1,7 @@
 {
   "name": "codeflow",
   "private": true,
-  "version": "0.4.1",
+  "version": "0.4.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.8.1",
     "@tauri-apps/plugin-updater": "^2.13.1",
     "@xyflow/react": "^12.8.5",
     "elkjs": "^0.11.0",
