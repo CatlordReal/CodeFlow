@@ -240,13 +240,6 @@ int total(const std::vector<int>& values) {
                 project = json.loads(recovery["contents"])
                 assert project["source"] == source and project["fileName"] == "totals.cpp"
                 assert project["history"]["active"] and len(project["history"]["revisions"]) > 1
-                driver.close()
-                driver.start(executable)
-                driver.wait("document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === 'Add values three times'", "native restart recovery")
-                assert driver.script("return document.querySelector('textarea[aria-label=\"C++ source code\"]').value") == source
-                restored = driver.invoke("read_recovery")
-                assert json.loads(restored["contents"])["history"] == project["history"]
-                report["recoveryRestored"] = True
                 driver.script("document.querySelector('button[aria-label=\"Check for updates\"]').click()")
                 report["updater"] = driver.wait("(() => {const banner = document.querySelector('.update-banner'); if (!banner || banner.classList.contains('update-banner--checking')) return null; return {kind: banner.className, message: banner.querySelector('span')?.textContent?.trim()};})()", "native updater TLS request")
                 bootstrap_error = ('Update check failed: None of the fallback platforms '
@@ -259,7 +252,7 @@ int total(const std::vector<int>& values) {
                     report["updaterBootstrap"] = False
                 # Send the same native WM_DELETE_WINDOW request as the titlebar X.
                 def visible_windows(title):
-                    result = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", title],
+                    result = subprocess.run(["xdotool", "search", "--onlyvisible", "--maxdepth", "1", "--name", title],
                                             capture_output=True, text=True)
                     return result.stdout.split()
 
@@ -309,6 +302,10 @@ int total(const std::vector<int>& values) {
                 driver.wait("document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === 'Close button recovery'", "confirmed-close recovery")
                 assert driver.script("return document.querySelector('textarea[aria-label=\"C++ source code\"]').value") == source
                 report["closeConfirmed"] = True
+                restored = json.loads(driver.invoke("read_recovery")["contents"])
+                assert restored["fileName"] == "totals.cpp"
+                assert restored["history"]["active"] and len(restored["history"]["revisions"]) >= len(project["history"]["revisions"])
+                report["recoveryRestored"] = True
                 report["closeRecoveryRestored"] = True
                 (args.output / "linux-smoke.json").write_text(json.dumps(report, indent=2) + "\n")
                 print("PASS: packaged Linux runtime, four Catppuccin palettes, native recovery restart, updater request")

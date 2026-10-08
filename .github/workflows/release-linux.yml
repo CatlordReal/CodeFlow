@@ -121,6 +121,15 @@ jobs:
           echo "appimage=$appimage" >> "$GITHUB_OUTPUT"
           echo "appimage_name=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
           echo "signature=$signature" >> "$GITHUB_OUTPUT"
+      # Test tooling belongs to the workflow commit; the app stays on its verified release tag.
+      - name: Check out native test harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-harness
+          sparse-checkout: .github/scripts/linux-smoke.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - name: Launch AppImage and capture runtime
         env:
           APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
@@ -133,7 +142,7 @@ jobs:
             bootstrap+=(--allow-bootstrap-updater)
           fi
           APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a -s '-screen 0 1440x900x24' \
-            python3 .github/scripts/linux-smoke.py "$APPIMAGE" \
+            python3 release-harness/.github/scripts/linux-smoke.py "$APPIMAGE" \
               --output output/linux-smoke "${bootstrap[@]}"
       - name: Upload Linux runtime proof
         if: always()
