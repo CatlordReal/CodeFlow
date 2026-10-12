@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { hideGraphNodes, presentGraph, presentLoopEdgeLabels, readProject, type Project } from '../src/presentation';
+import { hideGraphNodes, presentGraph, presentLoopEdgeLabels, readProject, loopCaption, type Project } from '../src/presentation';
 import type { FlowGraph } from '../src/types';
 const graph: FlowGraph = {nodes:[{id:'n1',kind:'process',label:'x++',line:1,start_byte:0,end_byte:3,comments:['note']}],edges:[],diagnostics:[]};
 const original = JSON.stringify(graph);
@@ -26,7 +26,7 @@ const loopGraph:FlowGraph={nodes:[
 const loopOriginal=JSON.stringify(loopGraph);
 assert.deepEqual(presentLoopEdgeLabels(loopGraph).edges.map(edge=>edge.label),['i < 3','not (i < 3)','Next item','Finished','Always','Never','Repeat']);
 assert.equal(JSON.stringify(loopGraph),loopOriginal,'loop labels must not mutate analyzer output');
-const project: Project = {format:'codeflow',version:1,source:'int f() {return 1;}',labelSource:'int f() {return 1;}',fileName:'example.cpp',mode:'natural',edits:{'1:overview':{n1:{natural:'Increase x',annotation:'Count a visit'}}},captions:{},expandLoops:false,includeComments:false,loopDepth:0,loopOverrides:{},hiddenBoxes:{},showHiddenBoxes:false,functionPositions:{}};
+const project: Project = {format:'codeflow',version:1,source:'int f() {return 1;}',labelSource:'int f() {return 1;}',fileName:'example.cpp',language:'cpp',view:'function',mode:'natural',edits:{'1:overview':{n1:{natural:'Increase x',annotation:'Count a visit'}}},captions:{},expandLoops:false,includeComments:false,loopDepth:0,loopOverrides:{},hiddenBoxes:{},showHiddenBoxes:false,functionPositions:{}};
 assert.deepEqual(readProject(JSON.stringify(project)),project);
 for(const invalid of [{...project,version:2},{...project,fileName:''},{...project,edits:[]},{...project,captions:{f:{n1:3}}},{...project,edits:{f:{n1:{annotation:'x'.repeat(2001)}}}}]) {
  assert.throws(()=>readProject(JSON.stringify(invalid)));
@@ -47,3 +47,13 @@ assert.deepEqual(hideGraphNodes(pathGraph,['step'],false).edges.map(e=>[e.source
 assert.equal(hideGraphNodes(pathGraph,['step'],true).nodes.find(n=>n.id==='step')?.hidden,true);
 assert.equal(hideGraphNodes(pathGraph,['start','end'],false).nodes.length,3);
 assert.throws(()=>readProject(JSON.stringify({...project,hiddenBoxes:{f:[3]}})));
+
+const oldProject={...project};delete oldProject.language;delete oldProject.view;
+assert.equal(readProject(JSON.stringify(oldProject)).language,'cpp');
+assert.equal(readProject(JSON.stringify(oldProject)).view,'function');
+const csProject={...project,language:'csharp',view:'program',fileName:'Program.cs'};
+assert.deepEqual(readProject(JSON.stringify(csProject)),csProject);
+for(const value of [{...project,language:'java'},{...project,view:'folder'}])assert.throws(()=>readProject(JSON.stringify(value)));
+assert.equal(loopCaption('foreach (var item in values)'), 'For each item in values');
+const csLoop={...loopGraph,nodes:[{...graph.nodes[0],id:'each',kind:'loop',label:'foreach (var item in values)',loop_condition:null}],edges:[{id:'next',source:'each',target:'body',label:'Yes'},{id:'done',source:'each',target:'end',label:'No'}]};
+assert.deepEqual(presentLoopEdgeLabels(csLoop).edges.map(edge=>edge.label),['Next item','Finished']);

@@ -1,9 +1,18 @@
-mod analyzer;
 mod ai;
+mod analyzer;
+mod csharp;
 mod documents;
 mod wallpaper;
+use serde::Deserialize;
 use std::io::Write;
 use tauri_plugin_dialog::DialogExt;
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SourceLanguage {
+    Cpp,
+    Csharp,
+}
 
 #[tauri::command]
 async fn inspect_cpp(source: String) -> Result<Vec<analyzer::FunctionInfo>, String> {
@@ -17,7 +26,8 @@ async fn inspect_cpp(source: String) -> Result<Vec<analyzer::FunctionInfo>, Stri
 async fn function_references(source: String) -> Result<Vec<analyzer::FunctionReference>, String> {
     validate_source(&source)?;
     tauri::async_runtime::spawn_blocking(move || analyzer::function_references(source))
-        .await.map_err(|error| error.to_string())
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -27,9 +37,55 @@ async fn analyze_cpp(
     include_comments: bool,
 ) -> Result<analyzer::FlowGraph, String> {
     validate_source(&source)?;
-    tauri::async_runtime::spawn_blocking(move || analyzer::analyze(source, function_id, include_comments))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        analyzer::analyze(source, function_id, include_comments)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn inspect_code(
+    source: String,
+    language: SourceLanguage,
+) -> Result<Vec<analyzer::FunctionInfo>, String> {
+    validate_code_source(&source)?;
+    tauri::async_runtime::spawn_blocking(move || match language {
+        SourceLanguage::Cpp => analyzer::inspect(source),
+        SourceLanguage::Csharp => csharp::inspect(source),
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn code_references(
+    source: String,
+    language: SourceLanguage,
+) -> Result<Vec<analyzer::FunctionReference>, String> {
+    validate_code_source(&source)?;
+    tauri::async_runtime::spawn_blocking(move || match language {
+        SourceLanguage::Cpp => analyzer::function_references(source),
+        SourceLanguage::Csharp => csharp::references(source),
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn analyze_code(
+    source: String,
+    function_id: String,
+    include_comments: bool,
+    language: SourceLanguage,
+) -> Result<analyzer::FlowGraph, String> {
+    validate_code_source(&source)?;
+    tauri::async_runtime::spawn_blocking(move || match language {
+        SourceLanguage::Cpp => analyzer::analyze(source, function_id, include_comments),
+        SourceLanguage::Csharp => csharp::analyze(source, function_id, include_comments),
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn validate_source(source: &str) -> Result<(), String> {
@@ -39,27 +95,48 @@ fn validate_source(source: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_code_source(source: &str) -> Result<(), String> {
+    if source.len() > 2 * 1024 * 1024 {
+        return Err("Open a source file smaller than 2 MB.".into());
+    }
+    Ok(())
+}
+
 fn decode_png(contents: &str) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
     const PREFIX: &str = "data:image/png;base64,";
-    let encoded = contents.strip_prefix(PREFIX).ok_or("Invalid PNG data URL.")?;
+    let encoded = contents
+        .strip_prefix(PREFIX)
+        .ok_or("Invalid PNG data URL.")?;
     if encoded.len() > ((16 * 1024 * 1024 + 2) / 3) * 4 + 4 || encoded.len() % 4 != 0 {
         return Err("PNG is invalid or larger than 16 MB.".into());
     }
-    let output = base64::engine::general_purpose::STANDARD.decode(encoded)
+    let output = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
         .map_err(|_| "Invalid PNG data URL.".to_string())?;
-    if output.len() > 16 * 1024 * 1024 || !output.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 174, 66, 96, 130]) {
+    if output.len() > 16 * 1024 * 1024
+        || !output.ends_with(&[0, 0, 0, 0, b'I', b'E', b'N', b'D', 174, 66, 96, 130])
+    {
         return Err("PNG is invalid or larger than 16 MB.".into());
     }
     let decoder = png::Decoder::new(std::io::Cursor::new(&output));
-    let mut reader = decoder.read_info().map_err(|_| "Invalid PNG data.".to_string())?;
+    let mut reader = decoder
+        .read_info()
+        .map_err(|_| "Invalid PNG data.".to_string())?;
     let info = reader.info();
-    if info.width > 16_384 || info.height > 16_384 || u64::from(info.width) * u64::from(info.height) > 32_000_000 {
+    if info.width > 16_384
+        || info.height > 16_384
+        || u64::from(info.width) * u64::from(info.height) > 32_000_000
+    {
         return Err("PNG exceeds the 32 megapixel image limit.".into());
     }
-    let buffer_size = reader.output_buffer_size().ok_or("PNG output is too large.")?;
+    let buffer_size = reader
+        .output_buffer_size()
+        .ok_or("PNG output is too large.")?;
     let mut pixels = vec![0; buffer_size];
-    reader.next_frame(&mut pixels).map_err(|_| "Invalid PNG data.".to_string())?;
+    reader
+        .next_frame(&mut pixels)
+        .map_err(|_| "Invalid PNG data.".to_string())?;
     Ok(output)
 }
 
@@ -70,31 +147,52 @@ async fn save_document(
     contents: String,
     extension: String,
 ) -> Result<bool, String> {
-    if !matches!(extension.as_str(), "cpp" | "svg" | "png" | "codeflow") || extension != "png" && contents.len() > 16 * 1024 * 1024 {
+    if !matches!(
+        extension.as_str(),
+        "cpp" | "cs" | "svg" | "png" | "codeflow"
+    ) || extension != "png" && contents.len() > 16 * 1024 * 1024
+    {
         return Err("Unsupported document type or document larger than 16 MB.".into());
     }
-    let bytes = if extension == "png" { decode_png(&contents)? } else { contents.into_bytes() };
+    let bytes = if extension == "png" {
+        decode_png(&contents)?
+    } else {
+        contents.into_bytes()
+    };
     tauri::async_runtime::spawn_blocking(move || {
         let file_name = std::path::Path::new(&name)
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("document");
-        let Some(file) = app.dialog().file()
+        let filter_label = match extension.as_str() {
+            "cpp" => "C++ source",
+            "cs" => "C# source",
+            _ => "Document",
+        };
+        let Some(file) = app
+            .dialog()
+            .file()
             .set_file_name(file_name)
-            .add_filter("Document", &[&extension])
-            .blocking_save_file() else { return Ok(false); };
+            .add_filter(filter_label, &[&extension])
+            .blocking_save_file()
+        else {
+            return Ok(false);
+        };
         let path = file.into_path().map_err(|error| error.to_string())?;
         persist_document(&path, &bytes)?;
         Ok(true)
-    }).await.map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 pub(crate) fn persist_document(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    let parent=path.parent().ok_or("Invalid save path")?;
-    let mut temporary=tempfile::NamedTempFile::new_in(parent).map_err(|e|e.to_string())?;
-    temporary.write_all(bytes).map_err(|e|e.to_string())?;
-    temporary.as_file().sync_all().map_err(|e|e.to_string())?;
-    temporary.persist(path).map_err(|e|e.to_string())?;Ok(())
+    let parent = path.parent().ok_or("Invalid save path")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    temporary.write_all(bytes).map_err(|e| e.to_string())?;
+    temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+    temporary.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn run() {
@@ -102,7 +200,25 @@ pub fn run() {
         .manage(documents::DocumentState::default())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![inspect_cpp, function_references, analyze_cpp, save_document, ai::ai_models, ai::ai_download, ai::ai_captions, wallpaper::wallpaper_theme, documents::open_document, documents::recent_projects, documents::open_recent_project, documents::save_project_document, documents::save_recovery, documents::read_recovery])
+        .invoke_handler(tauri::generate_handler![
+            inspect_cpp,
+            function_references,
+            analyze_cpp,
+            inspect_code,
+            code_references,
+            analyze_code,
+            save_document,
+            ai::ai_models,
+            ai::ai_download,
+            ai::ai_captions,
+            wallpaper::wallpaper_theme,
+            documents::open_document,
+            documents::recent_projects,
+            documents::open_recent_project,
+            documents::save_project_document,
+            documents::save_recovery,
+            documents::read_recovery
+        ])
         .run(tauri::generate_context!())
         .expect("error while running CodeFlow");
 }
@@ -125,11 +241,17 @@ mod export_tests {
         assert!(decode_png("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42Y=").is_err());
         let mut trailing = png.clone();
         trailing.push(0);
-        let trailing = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(trailing));
+        let trailing = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(trailing)
+        );
         assert!(decode_png(&trailing).is_err());
         let mut malformed_length = png.clone();
         malformed_length[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
-        let malformed_length = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(malformed_length));
+        let malformed_length = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(malformed_length)
+        );
         assert!(decode_png(&malformed_length).is_err());
         let oversized = format!("data:image/png;base64,{}", "A".repeat(22_369_628));
         assert!(decode_png(&oversized).is_err());

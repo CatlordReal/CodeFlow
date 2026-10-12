@@ -72,3 +72,13 @@ export function remapChart(state:ChartState,mappings:FunctionMapping[]):ChartSta
   }
   return {...state,edits,captions,loopOverrides,hiddenBoxes,functionPositions};
 }
+
+/** Keep the other parser's records when only the active source language is reanalyzed. */
+export function remapChartForLanguage(state:ChartState,mappings:FunctionMapping[],language:'cpp'|'csharp'):ChartState {
+  const next=remapChart(state,mappings);
+  const inactive=(id:string)=>language==='cpp'?id.startsWith('cs:'):!id.startsWith('cs:');
+  for(const field of ['edits','captions','loopOverrides','hiddenBoxes','functionPositions'] as const) {
+    Object.assign(next[field],Object.fromEntries(Object.entries(state[field]).filter(([id])=>inactive(id))));
+  }
+  return next;
+}

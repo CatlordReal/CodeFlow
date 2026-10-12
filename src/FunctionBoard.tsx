@@ -28,13 +28,14 @@ import {
   type LoopOverrides,
 } from "./presentation";
 import { overviewGraph, simplifyGraph } from "./simplify";
-import type { FunctionInfo } from "./types";
+import type { FunctionInfo, SourceLanguage } from "./types";
 import "./FunctionBoard.css";
 
 export type FunctionPosition = { x: number; y: number };
 
 export type FunctionBoardProps = {
   source: string;
+  language?: SourceLanguage;
   functions: FunctionInfo[];
   mode: ChartMode;
   includeComments: boolean;
@@ -112,7 +113,7 @@ const nodeTypes = { functionCard: FunctionCard };
 
 export default function FunctionBoard(props: FunctionBoardProps) {
   const {
-    source, functions, mode, includeComments, highlightUnmodified, loopDepth, loopOverrides, edits, captions,
+    source, language = "cpp", functions, mode, includeComments, highlightUnmodified, loopDepth, loopOverrides, edits, captions,
     hiddenBoxes, showHiddenBoxes, positions, onPositions, onOpenFunction, onExportReady,
   } = props;
   const [results, setResults] = useState<Record<string, FunctionResult>>({});
@@ -161,7 +162,7 @@ export default function FunctionBoard(props: FunctionBoardProps) {
     let nextIndex = 0;
     const analyzeOne = async (info: FunctionInfo): Promise<FunctionResult> => {
       try {
-        const parsed = simplifyGraph(await api.analyzeCpp(source, info.id, true));
+        const parsed = simplifyGraph(await api.analyzeCpp(source, info.id, true, language));
         const overview = overviewGraph(parsed, { depth: loopDepth, overrides: loopOverrides[info.id] ?? {} });
         const visible = hideGraphNodes(overview, hiddenBoxes[info.id] ?? [], showHiddenBoxes);
         const presented = {
@@ -202,19 +203,19 @@ export default function FunctionBoard(props: FunctionBoardProps) {
     };
     void Promise.all(Array.from({ length: Math.min(4, functions.length) }, () => worker()));
     return () => { if (analysisGeneration.current === generation) analysisGeneration.current += 1; };
-  }, [source, functions, mode, includeComments, highlightUnmodified, loopDepth, loopOverrides, edits, captions, hiddenBoxes, showHiddenBoxes,highlightUnmodified, acquireAnalysisSlot]);
+  }, [source, language, functions, mode, includeComments, highlightUnmodified, loopDepth, loopOverrides, edits, captions, hiddenBoxes, showHiddenBoxes,highlightUnmodified, acquireAnalysisSlot]);
 
   useEffect(() => {
     const generation = ++referenceGeneration.current;
     setReferences([]);
     setReferenceError("");
-    void api.functionReferences(source).then((next) => {
+    void api.functionReferences(source, language).then((next) => {
       if (generation === referenceGeneration.current) setReferences(next);
     }).catch((cause) => {
       if (generation === referenceGeneration.current) setReferenceError(errorMessage(cause));
     });
     return () => { if (referenceGeneration.current === generation) referenceGeneration.current += 1; };
-  }, [source]);
+  }, [source, language]);
 
   const palette = useMemo(() => {
     void paletteVersion;
@@ -272,10 +273,10 @@ export default function FunctionBoard(props: FunctionBoardProps) {
   }, []);
 
   const persistPositions = useCallback((_event: MouseEvent | TouchEvent, dragged: FunctionCardNode) => {
-    const next: Record<string, FunctionPosition> = {};
+    const next: Record<string, FunctionPosition> = {...positions};
     for (const node of boardNodes) next[node.id] = node.id === dragged.id ? dragged.position : node.position;
     onPositions(next);
-  }, [boardNodes, onPositions]);
+  }, [boardNodes, positions, onPositions]);
 
   useEffect(() => {
     if (!onExportReady) return;
@@ -307,7 +308,7 @@ export default function FunctionBoard(props: FunctionBoardProps) {
           <Controls showInteractive={false} position="bottom-right" />
           <MiniMap style={{width:120,height:78}} position="bottom-left" pannable zoomable nodeColor="var(--diagram-process-stroke)" maskColor="color-mix(in srgb, var(--panel) 72%, transparent)" />
         </ReactFlow>
-      ) : <div className="function-board__empty"><strong>No functions found</strong><span>Open a C++ file containing at least one function.</span></div>}
+      ) : <div className="function-board__empty"><strong>No functions found</strong><span>Open code containing at least one function.</span></div>}
       <div className="function-board__status" role="status" aria-live="polite">
         <span>{readyCount}/{functions.length} ready{errorCount ? ` · ${errorCount} unavailable` : ""}</span>
         {referenceError && <span title={referenceError}>Call links unavailable</span>}

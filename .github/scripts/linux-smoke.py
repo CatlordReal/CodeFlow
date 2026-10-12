@@ -176,10 +176,11 @@ def main():
 int total(const std::vector<int>& values) {
     int sum = 0;
     for (int value : values) {
-        for (int repeat = 0; repeat < 3; ++repeat) { sum += value; }
+        for (int repeat = 0; repeat < 3; ++repeat) { sum += helper(value); }
     }
     return sum;
 }
+int helper(int value) { return value * 2; }
 """
                 driver.set_value('textarea[aria-label="C++ source code"]', source)
                 driver.set_value('input[aria-label="C++ filename"]', "totals.cpp", "input")
@@ -192,11 +193,17 @@ int total(const std::vector<int>& values) {
                     ("Macchiato", "macchiato", "#c6a0f6", "#a6da95"),
                     ("Mocha", "mocha", "#cba6f7", "#a6e3a1"),
                 ]:
-                    driver.script("document.querySelector('.theme-picker summary').click()")
                     clicked = driver.script("""
-                        const button = [...document.querySelectorAll('.theme-picker button')]
+                        const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+                          .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('Appearance'));
+                        if (!menu) return false;
+                        if (!menu.open) menu.querySelector(':scope > summary')?.click();
+                        const picker = menu.querySelector('.theme-picker');
+                        if (!picker?.open) picker?.querySelector('summary')?.click();
+                        const button = [...(picker?.querySelectorAll('.theme-picker__menu button') ?? [])]
                           .find(button => button.textContent.trim() === arguments[0]);
-                        button?.click(); return Boolean(button);
+                        if (!menu.open || !picker?.open || !button || button.getClientRects().length === 0) return false;
+                        button.click(); menu.open = false; return true;
                     """, name)
                     assert clicked, name + " missing"
                     driver.wait("document.documentElement.dataset.theme === " + json.dumps("catppuccin-" + theme), name)
@@ -225,6 +232,27 @@ int total(const std::vector<int>& values) {
                 driver.command("POST", "window/rect", {"width": 900, "height": 900})
                 time.sleep(.5)
                 driver.capture(args.output, "linux-mocha-compact.png")
+                driver.command("POST", "window/rect", {"width": 1440, "height": 900})
+                driver.select('select[aria-label="Chart view"]', "program")
+                driver.wait("""(() => {
+                    const board = document.querySelector('.program-board');
+                    const calls = [...(board?.querySelectorAll('.react-flow__edge-path') ?? [])]
+                      .filter(path => { const dash = getComputedStyle(path).strokeDasharray; return dash && dash !== 'none' && dash !== '0px'; });
+                    return document.querySelector('select[aria-label="Chart view"]')?.value === 'program' &&
+                      board?.querySelectorAll('.program-group').length === 2 &&
+                      board?.querySelector('.program-board__status')?.textContent?.trim().startsWith('2/2 ready') &&
+                      board.querySelectorAll('.flow-symbol').length > 2 && calls.length >= 1;
+                })()""", "C++ whole program")
+                driver.script("document.querySelector('.program-board .react-flow__controls-fitview')?.click()")
+                time.sleep(.5)
+                driver.capture(args.output, "linux-program-cpp-wide.png")
+                driver.command("POST", "window/rect", {"width": 900, "height": 900})
+                driver.script("document.querySelector('.program-board .react-flow__controls-fitview')?.click()")
+                time.sleep(.5)
+                driver.capture(args.output, "linux-program-cpp-compact.png")
+                report["wholeProgramCpp"] = {"groups": 2, "ready": 2, "callLinks": True}
+                driver.select('select[aria-label="Chart view"]', "function")
+                driver.wait("document.querySelectorAll('.flow-symbol--subprocess').length === 1", "C++ function view")
                 driver.script("document.querySelector('.flow-symbol--subprocess').closest('.react-flow__node').dispatchEvent(new MouseEvent('click', {bubbles:true}))")
                 driver.wait("Boolean(document.querySelector('textarea[aria-label=\"Box label\"]'))", "box editor")
                 driver.set_value('textarea[aria-label="Box label"]', "Add values three times")
@@ -240,7 +268,16 @@ int total(const std::vector<int>& values) {
                 project = json.loads(recovery["contents"])
                 assert project["source"] == source and project["fileName"] == "totals.cpp"
                 assert project["history"]["active"] and len(project["history"]["revisions"]) > 1
-                driver.script("document.querySelector('button[aria-label=\"Check for updates\"]').click()")
+                clicked = driver.script("""
+                    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+                      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('More'));
+                    if (!menu) return false;
+                    if (!menu.open) menu.querySelector(':scope > summary')?.click();
+                    const button = menu.querySelector('button[aria-label="Check for updates"]');
+                    if (!menu.open || !button || button.disabled || button.getClientRects().length === 0) return false;
+                    button.click(); return true;
+                """)
+                assert clicked, "Check for updates control is unavailable"
                 report["updater"] = driver.wait("(() => {const banner = document.querySelector('.update-banner'); if (!banner || banner.classList.contains('update-banner--checking')) return null; return {kind: banner.className, message: banner.querySelector('span')?.textContent?.trim()};})()", "native updater TLS request")
                 bootstrap_error = ('Update check failed: None of the fallback platforms '
                                    '`["linux-x86_64-appimage", "linux-x86_64"]` were found '
@@ -307,8 +344,111 @@ int total(const std::vector<int>& values) {
                 assert restored["history"]["active"] and len(restored["history"]["revisions"]) >= len(project["history"]["revisions"])
                 report["recoveryRestored"] = True
                 report["closeRecoveryRestored"] = True
+
+                csharp_source = """using System;
+public class Demo {
+    public static int Twice(int value) => value * 2;
+    public static void Main() {
+        foreach (int value in new[] { 1, 2, 3 }) {
+            Console.WriteLine(Twice(value));
+        }
+    }
+}
+"""
+                driver.select('select[aria-label="Source language"]', "csharp")
+                driver.wait("Boolean(document.querySelector('textarea[aria-label=\"C# source code\"]'))", "C# editor")
+                driver.set_value('textarea[aria-label="C# source code"]', csharp_source)
+                driver.set_value('input[aria-label="C# filename"]', "Demo.cs", "input")
+                driver.select('select[aria-label="Loop expansion depth"]', "1")
+                driver.select('select[aria-label="Chart view"]', "program")
+                driver.wait("""(() => {
+                    const board = document.querySelector('.program-board');
+                    const calls = [...(board?.querySelectorAll('.react-flow__edge-path') ?? [])]
+                      .filter(path => { const dash = getComputedStyle(path).strokeDasharray; return dash && dash !== 'none' && dash !== '0px'; });
+                    return document.querySelector('select[aria-label="Chart view"]')?.value === 'program' &&
+                      board?.querySelectorAll('.program-group').length === 2 &&
+                      board?.querySelector('.program-board__status')?.textContent?.trim().startsWith('2/2 ready') &&
+                      board?.querySelector('.program-group[data-entry] header strong')?.textContent?.trim() === 'Main' &&
+                      board.querySelectorAll('.flow-symbol').length > 2 && calls.length >= 1;
+                })()""", "C# whole program")
+                driver.command("POST", "window/rect", {"width": 1440, "height": 900})
+                driver.script("document.querySelector('.program-board .react-flow__controls-fitview')?.click()")
+                time.sleep(.5)
+                driver.capture(args.output, "linux-program-csharp-wide.png")
+                selected = driver.script("""
+                    const symbol = [...document.querySelectorAll('.program-board .flow-symbol--process, .program-board .flow-symbol--io')]
+                      .find(node => node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0);
+                    const node = symbol?.closest('.react-flow__node');
+                    if (!node || node.querySelector('.program-group')) return false;
+                    node.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+                    return true;
+                """)
+                assert selected, "C# program box was not clickable"
+                driver.wait("Boolean(document.querySelector('textarea[aria-label=\"Box label\"]') && document.querySelector('.source-highlight'))", "C# program box editor and source highlight")
+                time.sleep(.35)
+                selection_context = driver.script("""
+                    return {
+                      highlight: document.querySelector('.source-highlight')?.getAttribute('style') ?? '',
+                      transform: document.querySelector('.program-board .react-flow__viewport')?.style.transform ?? ''
+                    };
+                """)
+                assert selection_context["highlight"] and selection_context["transform"], selection_context
+                csharp_label = "Write doubled value"
+                driver.set_value('textarea[aria-label="Box label"]', csharp_label)
+                driver.wait("""(() => {
+                    const labels = [...document.querySelectorAll('.program-board .flow-symbol__label')];
+                    return labels.some(node => node.textContent === %s) &&
+                      document.querySelector('select[aria-label="Chart view"]')?.value === 'program' &&
+                      document.querySelector('.source-highlight')?.getAttribute('style') === %s &&
+                      document.querySelector('.program-board .react-flow__viewport')?.style.transform === %s;
+                })()""" % (json.dumps(csharp_label), json.dumps(selection_context["highlight"]), json.dumps(selection_context["transform"])), "stable C# program edit context")
+                deadline = time.monotonic() + 20
+                while True:
+                    csharp_recovery = driver.invoke("read_recovery")
+                    if csharp_recovery:
+                        recovered_csharp = json.loads(csharp_recovery["contents"])
+                        if (recovered_csharp.get("source") == csharp_source and
+                                recovered_csharp.get("fileName") == "Demo.cs" and
+                                recovered_csharp.get("language") == "csharp" and
+                                recovered_csharp.get("view") == "program" and
+                                csharp_label in json.dumps(recovered_csharp.get("edits", {})) and
+                                recovered_csharp.get("history", {}).get("active") and
+                                len(recovered_csharp.get("history", {}).get("revisions", [])) > 1):
+                            break
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("Native recovery did not save C# whole-program state")
+                    time.sleep(.2)
+                driver.command("POST", "window/rect", {"width": 900, "height": 900})
+                driver.script("document.querySelector('.program-board .react-flow__controls-fitview')?.click()")
+                time.sleep(.5)
+                driver.capture(args.output, "linux-program-csharp-compact.png")
+
+                main_window, = visible_windows("^CodeFlow$")
+                send_wm_delete(main_window)
+                dialog = wait_dialog()
+                subprocess.run(["xdotool", "windowfocus", "--sync", dialog], check=True)
+                subprocess.run(["xdotool", "key", "Return"], check=True)
+                deadline = time.monotonic() + 20
+                while main_window in visible_windows("^CodeFlow$"):
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("Confirmed C# native close did not close the app")
+                    time.sleep(.1)
+                try:
+                    driver.close()
+                except (OSError, RuntimeError):
+                    driver.session = None
+                driver.start(executable)
+                driver.wait("""document.querySelector('textarea[aria-label="C# source code"]')?.value === %s &&
+                    document.querySelector('select[aria-label="Chart view"]')?.value === 'program' &&
+                    [...document.querySelectorAll('.program-board .flow-symbol__label')].some(node => node.textContent === %s)""" % (json.dumps(csharp_source), json.dumps(csharp_label)), "confirmed-close C# recovery")
+                final_csharp = json.loads(driver.invoke("read_recovery")["contents"])
+                assert final_csharp["language"] == "csharp" and final_csharp["view"] == "program"
+                assert final_csharp["source"] == csharp_source and csharp_label in json.dumps(final_csharp["edits"])
+                assert final_csharp["history"]["active"] and len(final_csharp["history"]["revisions"]) >= len(recovered_csharp["history"]["revisions"])
+                report["csharp"] = {"groups": 2, "ready": 2, "callLinks": True, "entry": "Main",
+                                    "label": csharp_label, "recoveryRestored": True}
                 (args.output / "linux-smoke.json").write_text(json.dumps(report, indent=2) + "\n")
-                print("PASS: packaged Linux runtime, four Catppuccin palettes, native recovery restart, updater request")
+                print("PASS: packaged Linux runtime, C++ and C# whole-program boards, native recovery restarts, updater request")
             finally:
                 try:
                     driver.close()

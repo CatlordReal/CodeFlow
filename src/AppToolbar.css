@@ -1,0 +1,261 @@
+.app-toolbar {
+  position: relative;
+  z-index: 80;
+  overflow: visible;
+}
+
+.app-toolbar__actions {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.app-toolbar__language {
+  width: 54px;
+  height: 26px;
+  padding: 0 18px 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  background-color: var(--panel-2);
+  font: 650 10px ui-monospace, SFMono-Regular, Consolas, monospace;
+  cursor: pointer;
+}
+
+.app-toolbar__language:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.app-toolbar__group {
+  position: relative;
+  -webkit-app-region: no-drag;
+}
+
+.app-toolbar__group > summary {
+  list-style: none;
+}
+
+.app-toolbar__group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.app-toolbar__group > summary svg {
+  width: 12px;
+  transition: transform .15s ease;
+}
+
+.app-toolbar__group[open] > summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.app-toolbar__menu {
+  position: absolute;
+  z-index: 200;
+  top: calc(100% + 7px);
+  right: 0;
+  width: 210px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 97%, transparent);
+  box-shadow: 0 16px 42px var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.app-toolbar__group:not(.app-toolbar__group--end) > .app-toolbar__menu {
+  left: 0;
+  right: auto;
+}
+
+.app-toolbar__menu button,
+.app-toolbar__recent > summary {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: 600 11px/16px ui-sans-serif, system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.app-toolbar__menu button:hover:not(:disabled),
+.app-toolbar__menu button:focus-visible,
+.app-toolbar__recent > summary:hover,
+.app-toolbar__recent > summary:focus-visible {
+  outline: none;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.app-toolbar__menu button:disabled {
+  cursor: default;
+  opacity: .42;
+}
+
+.app-toolbar__menu button svg,
+.app-toolbar__recent svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+.app-toolbar__divider {
+  height: 1px;
+  margin: 4px 3px;
+  background: var(--line);
+}
+
+.app-toolbar__recent > summary {
+  list-style: none;
+}
+
+.app-toolbar__recent > summary::-webkit-details-marker {
+  display: none;
+}
+
+.app-toolbar__recent > summary svg {
+  margin-left: auto;
+  transition: transform .15s ease;
+}
+
+.app-toolbar__recent[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.app-toolbar__recent > div {
+  max-height: min(220px, 35vh);
+  overflow: auto;
+  padding: 2px 0 2px 10px;
+}
+
+.app-toolbar__recent button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-toolbar__empty {
+  display: block;
+  padding: 8px 9px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.app-toolbar__menu--appearance {
+  width: 260px;
+  padding: 8px;
+}
+
+.app-toolbar__menu--appearance > .theme-picker > summary {
+  width: 100%;
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.app-toolbar__menu--appearance > .theme-picker > summary:hover,
+.app-toolbar__menu--appearance > .theme-picker > summary:focus-visible {
+  outline: none;
+  background: var(--accent-soft);
+}
+
+.app-toolbar__menu--appearance .theme-picker__menu {
+  top: calc(100% + 4px);
+  left: 0;
+  right: auto;
+  max-height: min(430px, calc(100vh - 150px));
+}
+
+.app-toolbar__transparency {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 7px 10px;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.app-toolbar__transparency input {
+  -webkit-appearance: none;
+  appearance: none;
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.app-toolbar__transparency input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.app-toolbar__transparency input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+.app-toolbar__transparency input::-moz-range-track {
+  height: 4px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.app-toolbar__transparency input::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.app-toolbar__transparency input::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+.app-toolbar__transparency input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app-toolbar__transparency output {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .app-toolbar { gap: 10px; }
+  .app-toolbar__actions { gap: 5px; flex-wrap: nowrap; padding-block: 0; }
+  .app-toolbar__group > summary,
+  .app-toolbar__save { min-height: 32px; padding-inline: 8px; }
+  .app-toolbar__save span { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-toolbar__group > summary svg,
+  .app-toolbar__recent > summary svg { transition: none; }
+}

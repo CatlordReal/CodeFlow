@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {defaultChartState} from '../src/history';
 import {mapFunction,matchFunctions,remapChart} from '../src/preservation';
+import {remapChartForLanguage} from '../src/preservation';
 import type {FlowGraph,FlowNode} from '../src/types';
 const node=(id:string,code:string,kind='process'):FlowNode=>({id,label:code,kind,line:1,start_byte:1,end_byte:2,comments:[],source_identity:code});
 const graph=(nodes:FlowNode[]):FlowGraph=>({nodes,edges:[],diagnostics:[]});
@@ -72,3 +73,17 @@ assert.equal(changedNested.detail.get('old-inner'),'changed-inner','expanded loo
 const changedHidden=remapChart(nestedState,[changedNested]);
 assert.deepEqual(changedHidden.hiddenBoxes,{'changed-function':['changed-body']},'hidden collapsed loop does not transfer through header identity after its body changes');
 console.log('PASS: stable code retains labels, notes and layout; changed or ambiguous boxes invalidate only their edits');
+
+const multiLanguage=defaultChartState();
+multiLanguage.edits={'cs:24:overview':{step:{natural:'Keep C# caption'}},'123:overview':{step:{natural:'Keep C++ caption'}}};
+multiLanguage.captions={'cs:24:overview':{step:'C# AI label'},'123:overview':{step:'C++ AI label'}};
+multiLanguage.loopOverrides={'cs:24':{loop:true},'123':{loop:false}};
+multiLanguage.hiddenBoxes={'cs:24':['step'],'123':['step']};
+multiLanguage.functionPositions={'cs:24':{x:120,y:340},'123':{x:420,y:30}};
+for(const language of ['cpp','csharp'] as const){
+ const kept=language==='cpp'?'cs:24':'123';
+ const mapped=remapChartForLanguage(multiLanguage,[],language);
+ for(const field of ['loopOverrides','hiddenBoxes','functionPositions'] as const)assert.deepEqual(mapped[field][kept],multiLanguage[field][kept]);
+ for(const field of ['edits','captions'] as const)assert.deepEqual(mapped[field][kept+':overview'],multiLanguage[field][kept+':overview']);
+ assert.equal(Object.keys(mapped.edits).length,1,'removed active-language functions must still invalidate their edits');
+}

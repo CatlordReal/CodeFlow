@@ -15,6 +15,10 @@ pub struct FunctionReference {
     pub source: String,
     pub target: String,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_byte: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_byte: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -644,6 +648,8 @@ pub fn function_references(source: String) -> Vec<FunctionReference> {
                 source: source_definition.info.id.clone(),
                 target: candidates[0].info.id.clone(),
                 label,
+                start_byte: Some(call.start_byte()),
+                end_byte: Some(call.end_byte()),
             };
             if !references.contains(&reference) {
                 references.push(reference);
@@ -1673,17 +1679,25 @@ void caller() {
         assert_eq!(overloads.len(), 2);
         assert_ne!(overloads[0].identity, overloads[1].identity);
 
-        let references = function_references(source);
+        let references = function_references(source.clone());
         assert_eq!(references.len(), 2);
         assert!(references.contains(&FunctionReference {
             source: caller.id.clone(),
             target: alpha_ping.id.clone(),
             label: "alpha::ping".to_owned(),
+            start_byte: source.find("alpha::ping();").map(|start| start),
+            end_byte: source
+                .find("alpha::ping();")
+                .map(|start| start + "alpha::ping()".len()),
         }));
         assert!(references.contains(&FunctionReference {
             source: caller.id.clone(),
             target: unique.id.clone(),
             label: "unique".to_owned(),
+            start_byte: source.find("unique();").map(|start| start),
+            end_byte: source
+                .find("unique();")
+                .map(|start| start + "unique()".len()),
         }));
         assert!(!references
             .iter()

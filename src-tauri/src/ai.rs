@@ -116,7 +116,7 @@ pub async fn ai_captions(model: String, nodes: Vec<CaptionInput>) -> Result<BTre
             "format": {"type":"object", "properties":{"caption":{"type":"string"}},"required":["caption"],"additionalProperties":false},
             "options": {"temperature":0,"num_ctx":4096,"num_predict":160},
             "messages": [
-                {"role":"system","content":r#"Write a plain English flowchart label for this C++ snippet. Summarize its purpose in 4-12 words. Never copy code syntax. Return JSON with a caption string. Examples: `total += value;` => {"caption":"Add value to the total"}; `queue.push(p); seen[p] = true;` => {"caption":"Queue the point and mark it as seen"}; `x >= 0 && x < width` => {"caption":"Is x within the horizontal bounds?"}."#},
+                {"role":"system","content":r#"Write a plain English flowchart label for this code snippet. Summarize its purpose in 4-12 words. Never copy code syntax. Return JSON with a caption string. Examples: `total += value;` => {"caption":"Add value to the total"}; `queue.push(p); seen[p] = true;` => {"caption":"Queue the point and mark it as seen"}; `x >= 0 && x < width` => {"caption":"Is x within the horizontal bounds?"}."#},
                 {"role":"user","content": node.code}
             ]
         });

@@ -137,8 +137,15 @@ int helper(int value) { return value * 2; }`;
 
   await selectValue(client, 'select[aria-label="Chart view"]', 'file');
   await waitForValue(client, deadline, `document.querySelectorAll('.function-board-card').length === 2 && document.querySelectorAll('.function-board .react-flow__edge').length >= 1`, "file map call references");
-  await waitForValue(client, deadline, `[...document.querySelectorAll('.toolbar button')].some(button => button.textContent.trim() === 'Export PNG' && !button.disabled)`, "enabled PNG export");
-  const pngControlPresent = true;
+  await openToolbarMenu(client, "Export");
+  await waitForValue(client, deadline, `(() => {
+    const buttons = [...document.querySelectorAll('.app-toolbar__menu button')]
+      .filter(button => !button.disabled && button.getClientRects().length > 0)
+      .map(button => button.textContent.trim());
+    return buttons.includes('Export SVG') && buttons.includes('Export PNG');
+  })()`, "enabled SVG and PNG exports");
+  const pngControlPresent = true, svgControlPresent = true;
+  await closeToolbarMenus(client);
   await selectValue(client, 'select[aria-label="Chart view"]', 'function');
   await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "0", subprocesses: 1 });
   const saveProjectPresent = await evaluate(client, `[...document.querySelectorAll('.toolbar button')].some(button => button.textContent.trim() === 'Save project' && !button.disabled)`);
@@ -153,6 +160,83 @@ int helper(int value) { return value * 2; }`;
   await delay(500);
   const compact = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "0", subprocesses: 1 });
   const compactBytes = await capture(client, path.join(options.output, "windows-smoke-compact.png"));
+
+  await setViewport(client, 1440, 900);
+  await selectValue(client, 'select[aria-label="Chart view"]', 'program');
+  const cppProgram = await waitForProgram(client, deadline, { groups: 2 });
+  await evaluate(client, `document.querySelector('.program-board .react-flow__controls-fitview')?.click()`);
+  await delay(500);
+  const cppProgramBytes = await capture(client, path.join(options.output, "windows-program-cpp-wide.png"));
+  await setViewport(client, 900, 900);
+  await evaluate(client, `document.querySelector('.program-board .react-flow__controls-fitview')?.click()`);
+  await delay(500);
+  const cppProgramCompactBytes = await capture(client, path.join(options.output, "windows-program-cpp-compact.png"));
+
+  const csharpSource = `using System;
+public class Demo {
+    public static int Twice(int value) => value * 2;
+    public static void Main() {
+        foreach (int value in new[] { 1, 2, 3 }) {
+            Console.WriteLine(Twice(value));
+        }
+    }
+}`;
+  await selectValue(client, 'select[aria-label="Source language"]', 'csharp');
+  await waitForValue(client, deadline, `Boolean(document.querySelector('textarea[aria-label="C# source code"]'))`, "C# editor");
+  await setTextarea(client, 'textarea[aria-label="C# source code"]', csharpSource);
+  await setInput(client, 'input[aria-label="C# filename"]', 'Demo.cs');
+  await selectValue(client, 'select[aria-label="Loop expansion depth"]', '1');
+  await selectValue(client, 'select[aria-label="Chart view"]', 'program');
+  const csharpProgram = await waitForProgram(client, deadline, { groups: 2, entry: "Main" });
+  await setViewport(client, 1440, 900);
+  await evaluate(client, `document.querySelector('.program-board .react-flow__controls-fitview')?.click()`);
+  await delay(500);
+  const csharpWideBytes = await capture(client, path.join(options.output, "windows-program-csharp-wide.png"));
+
+  const csharpSelected = await evaluate(client, `(() => {
+    const symbol = [...document.querySelectorAll('.program-board .flow-symbol--process, .program-board .flow-symbol--io')]
+      .find(node => node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0);
+    const node = symbol?.closest('.react-flow__node');
+    if (!node || node.querySelector('.program-group')) return false;
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return true;
+  })()`);
+  if (!csharpSelected) throw new Error("C# program box was not clickable.");
+  await waitForValue(client, deadline, `Boolean(document.querySelector('textarea[aria-label="Box label"]') && document.querySelector('.source-highlight'))`, "C# program box editor and source highlight");
+  await delay(350);
+  const programSelection = await evaluate(client, `({
+    highlight: document.querySelector('.source-highlight')?.getAttribute('style') ?? '',
+    transform: document.querySelector('.program-board .react-flow__viewport')?.style.transform ?? ''
+  })`);
+  if (!programSelection.highlight || !programSelection.transform) throw new Error("C# program selection context was incomplete.");
+  const csharpLabel = "Write doubled value";
+  await setTextarea(client, 'textarea[aria-label="Box label"]', csharpLabel);
+  await waitForValue(client, deadline, `(() => {
+    const labels = [...document.querySelectorAll('.program-board .flow-symbol__label')];
+    return labels.some(node => node.textContent === ${JSON.stringify(csharpLabel)}) &&
+      document.querySelector('select[aria-label="Chart view"]')?.value === 'program' &&
+      document.querySelector('.source-highlight')?.getAttribute('style') === ${JSON.stringify(programSelection.highlight)} &&
+      document.querySelector('.program-board .react-flow__viewport')?.style.transform === ${JSON.stringify(programSelection.transform)};
+  })()`, "stable C# program edit context");
+  const csharpRecovery = await waitForNativeRecovery(client, deadline, {
+    source: csharpSource,
+    fileName: "Demo.cs",
+    label: csharpLabel,
+    language: "csharp",
+    view: "program",
+  });
+  await setViewport(client, 900, 900);
+  await evaluate(client, `document.querySelector('.program-board .react-flow__controls-fitview')?.click()`);
+  await delay(500);
+  const csharpCompactBytes = await capture(client, path.join(options.output, "windows-program-csharp-compact.png"));
+
+  await selectValue(client, 'select[aria-label="Source language"]', 'cpp');
+  await waitForValue(client, deadline, `Boolean(document.querySelector('textarea[aria-label="C++ source code"]'))`, "restored C++ editor");
+  await setTextarea(client, 'textarea[aria-label="C++ source code"]', commentRemovedSource);
+  await selectValue(client, 'select[aria-label="Chart view"]', 'function');
+  await selectValue(client, 'select[aria-label="Label mode"]', 'natural');
+  await selectValue(client, 'select[aria-label="Loop expansion depth"]', '0');
+  await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "0", subprocesses: 1 });
 
   const recoveryLabel = "Recovered Windows label";
   const recoveryFileName = "windows-recovery.cpp";
@@ -195,9 +279,12 @@ int helper(int value) { return value * 2; }`;
     edits: { naturalLabel: boxLabel, annotation, retainedAcrossModeChange: true, retainedAfterCommentRemoval: true, flagHighlightHideReset: true },
     history: { alternate: true, undo: true, reset: true },
     fileMap: { cards: 2, callReferences: true },
+    wholeProgram: { cppGroups: cppProgram.groups, cppCalls: cppProgram.calls, wideBytes: cppProgramBytes, compactBytes: cppProgramCompactBytes },
+    csharp: { groups: csharpProgram.groups, calls: csharpProgram.calls, entry: "Main", label: csharpLabel, wideBytes: csharpWideBytes, compactBytes: csharpCompactBytes, recoveryHistoryRevisions: csharpRecovery.project.history.revisions.length },
     appearance: { transparency: 35, themePopup: true },
     wallpaper: { first: wallpaperFirst, second: wallpaperSecond, refreshed: true },
     pngExport: { controlPresent: pngControlPresent, nativeDialogOpened: false },
+    svgExport: { controlPresent: svgControlPresent, nativeDialogOpened: false },
     projectSave: { controlPresent: saveProjectPresent, nativeDialogOpened: false, persistenceTested: false },
     recovery: { nativeSnapshot: true, restartPending: true, fileName: recoveryFileName, historyRevisions: recoveryExpected.history.revisions.length },
     updater,
@@ -312,6 +399,35 @@ async function waitForValue(client, end, expression, description) {
   throw new Error(`CodeFlow did not reach ${description}.`);
 }
 
+async function waitForProgram(client, end, expected) {
+  let state;
+  while (Date.now() < end) {
+    state = await evaluate(client, `(() => {
+      const board = document.querySelector('.program-board');
+      const paths = [...(board?.querySelectorAll('.react-flow__edge-path') ?? [])];
+      return {
+        view: document.querySelector('select[aria-label="Chart view"]')?.value ?? '',
+        groups: board?.querySelectorAll('.program-group').length ?? 0,
+        ready: board?.querySelector('.program-board__status')?.textContent?.trim() ?? '',
+        entry: board?.querySelector('.program-group[data-entry] header strong')?.textContent?.trim() ?? '',
+        calls: paths.filter(path => {
+          const dash = getComputedStyle(path).strokeDasharray;
+          return dash && dash !== 'none' && dash !== '0px';
+        }).length,
+        symbols: board?.querySelectorAll('.flow-symbol').length ?? 0,
+        error: document.querySelector('.chart-status--error')?.textContent?.trim() ?? '',
+      };
+    })()`);
+    if (state.error) throw new Error(`Whole program rendered an error: ${state.error}`);
+    if (state.view === "program" && state.groups === expected.groups &&
+        state.ready.startsWith(`${expected.groups}/${expected.groups} ready`) &&
+        (expected.entry === undefined || state.entry === expected.entry) &&
+        state.calls >= 1 && state.symbols > state.groups) return state;
+    await delay(150);
+  }
+  throw new Error(`Whole program did not reach expected state: ${JSON.stringify(state)}.`);
+}
+
 async function waitForWallpaperPalette(client, end, previousAccent = null) {
   let palette;
   while (Date.now() < end) {
@@ -333,8 +449,12 @@ async function waitForWallpaperPalette(client, end, previousAccent = null) {
 
 async function checkUpdater(client, end) {
   const clicked = await evaluate(client, `(() => {
-    const button = document.querySelector('button[aria-label="Check for updates"]');
-    if (!button || button.disabled) return false;
+    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('More'));
+    if (!menu) return false;
+    if (!menu.open) menu.querySelector(':scope > summary')?.click();
+    const button = menu.querySelector('button[aria-label="Check for updates"]');
+    if (!menu.open || !button || button.disabled || button.getClientRects().length === 0) return false;
     button.click();
     return true;
   })()`);
@@ -372,17 +492,22 @@ async function selectValue(client, selector, value) {
 
 async function chooseTheme(client, name) {
   const chosen = await evaluate(client, `(() => {
-    const picker = document.querySelector('.theme-picker');
+    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('Appearance'));
+    if (!menu) return false;
+    if (!menu.open) menu.querySelector(':scope > summary')?.click();
+    const picker = menu.querySelector('.theme-picker');
     const summary = picker?.querySelector('summary');
-    if (!picker || !summary) return false;
-    summary.click();
+    if (!menu.open || !picker || !summary) return false;
+    if (!picker.open) summary.click();
     const button = [...picker.querySelectorAll('.theme-picker__menu button')].find(item => {
       const label = item.cloneNode(true);
       label.querySelectorAll('small').forEach(detail => detail.remove());
       return label.textContent.trim() === ${JSON.stringify(name)};
     });
-    if (!button) return false;
+    if (!picker.open || !button || button.getClientRects().length === 0) return false;
     button.click();
+    menu.open = false;
     return true;
   })()`);
   if (!chosen) throw new Error(`Missing theme option: ${name}.`);
@@ -390,21 +515,43 @@ async function chooseTheme(client, name) {
 
 async function setRange(client, selector, value) {
   const changed = await evaluate(client, `(() => {
+    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('Appearance'));
+    if (!menu) return false;
+    if (!menu.open) menu.querySelector(':scope > summary')?.click();
     const input = document.querySelector(${JSON.stringify(selector)});
-    if (!(input instanceof HTMLInputElement)) return false;
+    if (!menu.open || !(input instanceof HTMLInputElement) || input.getClientRects().length === 0) return false;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(String(value))});
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+    menu.open = false;
     return true;
   })()`);
   if (!changed) throw new Error(`Missing range input: ${selector}.`);
 }
 
+async function openToolbarMenu(client, name) {
+  const opened = await evaluate(client, `(() => {
+    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith(${JSON.stringify(name)}));
+    if (!menu) return false;
+    if (!menu.open) menu.querySelector(':scope > summary')?.click();
+    return menu.open && menu.querySelector(':scope > .app-toolbar__menu')?.getClientRects().length > 0;
+  })()`);
+  if (!opened) throw new Error(`Toolbar menu did not open: ${name}.`);
+}
+
+async function closeToolbarMenus(client) {
+  await evaluate(client, `document.querySelectorAll('.app-toolbar__actions > details[open]').forEach(menu => { menu.open = false; })`);
+}
+
 async function clickButton(client, container, text) {
   const clicked = await evaluate(client, `(() => {
     const root = document.querySelector(${JSON.stringify(container)});
+    const tools = root?.querySelector('.chart-tools');
+    if (tools && !tools.open) tools.querySelector(':scope > summary')?.click();
     const button = [...(root?.querySelectorAll('button') ?? [])].find(item => item.textContent.trim() === ${JSON.stringify(text)});
-    if (!button || button.disabled) return false;
+    if (!button || button.disabled || button.getClientRects().length === 0) return false;
     button.click();
     return true;
   })()`);
@@ -414,9 +561,11 @@ async function clickButton(client, container, text) {
 async function clickCheckboxLabel(client, container, text) {
   const clicked = await evaluate(client, `(() => {
     const root = document.querySelector(${JSON.stringify(container)});
+    const tools = root?.querySelector('.chart-tools');
+    if (tools && !tools.open) tools.querySelector(':scope > summary')?.click();
     const label = [...(root?.querySelectorAll('label') ?? [])].find(item => item.textContent.includes(${JSON.stringify(text)}));
     const checkbox = label?.querySelector('input[type="checkbox"]');
-    if (!checkbox || checkbox.disabled) return false;
+    if (!checkbox || checkbox.disabled || checkbox.getClientRects().length === 0) return false;
     checkbox.click();
     return true;
   })()`);
@@ -467,6 +616,8 @@ async function waitForNativeRecovery(client, end, expected) {
     if (state?.parseError) throw new Error(`Native recovery JSON is invalid: ${state.parseError}`);
     const project = state?.project;
     if (project?.source === expected.source && project.fileName === expected.fileName &&
+        (expected.language === undefined || project.language === expected.language) &&
+        (expected.view === undefined || project.view === expected.view) &&
         JSON.stringify(project.edits).includes(JSON.stringify(expected.label)) &&
         project.history?.active && project.history.revisions?.length > 1 &&
         state.dirty === true && state.sourceDirty === true && state.projectDirty === true) return state;

@@ -15,7 +15,9 @@ import FlowNodeCard from "./FlowNodeCard";
 import { createPngDataUrl, createSvgDocument, svgPaletteFromCss, svgDocumentName } from "./exportSvg";
 import { edgeTypes, layoutGraph, type CanvasNode } from "./layout";
 import { formatUpdaterError } from "./update";
-import ThemePicker from "./ThemePicker";
+import AppToolbar from "./AppToolbar";
+import ChartTools from "./ChartTools";
+import ProgramBoard from "./ProgramBoard";
 import LocalAI from "./LocalAI";
 import { analyzeLoops, overviewGraph, simplifyGraph } from "./simplify";
 import { hideGraphNodes, nodePresentationKey, presentGraph, presentLoopEdgeLabels, readProject, type ChartMode, type ChartEdits, type CaptionSets, type LoopOverrides, type Project } from "./presentation";
@@ -23,10 +25,10 @@ import "./editing.css";
 import {defaultChartState,useChartHistory} from "./history";
 import HistoryPanel from "./HistoryPanel";
 import FunctionBoard from "./FunctionBoard";
-import {mapFunction,matchFunctions,remapChart,type FunctionMapping} from './preservation';
+import {mapFunction,matchFunctions,remapChart,remapChartForLanguage,type FunctionMapping} from './preservation';
 import type {ChartState} from './history';
 import { SAMPLE_CPP } from "./sample";
-import type { FlowGraph, FunctionInfo } from "./types";
+import type { FlowGraph, FunctionInfo, SourceLanguage, ChartView } from "./types";
 import { createDesktopCloseHandler } from "./close";
 
 const nodeTypes = { flowNode: FlowNodeCard };
@@ -68,11 +70,13 @@ export default function App() {
   const setEdits=(value:ChartEdits|((v:ChartEdits)=>ChartEdits))=>change('edits',value,'Edit box',`edit:${selectedFunction}:${selectedNodeId}`);
   const setCaptions=(value:CaptionSets|((v:CaptionSets)=>CaptionSets))=>change('captions',value,'AI captions');
   const [showHistory,setShowHistory]=useState(false);
-  const [fileView,setFileView]=useState(false);
+  const [language,setLanguage]=useState<SourceLanguage>('cpp');
+  const [chartView,setChartView]=useState<ChartView>('function');
+  const fileView=chartView==='file', boardView=chartView!=='function';
   const [highlightUnmodified,setHighlightUnmodified]=useState(false);
   const [boardSvg,setBoardSvg]=useState('');
-  const baseline=useRef<{source:string;functions:FunctionInfo[];session:number}|null>(null);
-  const labelLibrary=useRef<{source:string;functions:FunctionInfo[];state:ChartState}[]>([]);
+  const baseline=useRef<{source:string;language:SourceLanguage;functions:FunctionInfo[];session:number}|null>(null);
+  const labelLibrary=useRef<{source:string;language:SourceLanguage;functions:FunctionInfo[];state:ChartState}[]>([]);
   const chartRef=useRef(chart);chartRef.current=chart;
   const libraryLoaded=useRef(false);
   const projectToken=useRef<string|null>(null),documentSession=useRef(0),savingProject=useRef(false);
@@ -117,17 +121,17 @@ export default function App() {
   const replaceSource=useCallback((text:string)=>{inspectRequest.current++;analyzeRequest.current++;layoutRequest.current++;sourceRef.current=text;setSource(text);},[]);
   const isDesktop = "__TAURI_INTERNALS__" in window;
   sourceRef.current = source;dirtyRef.current=isDirty||projectDirty;sourceDirtyRef.current=isDirty;projectDirtyRef.current=projectDirty;recoveryReadyRef.current=recoveryReady;
-  const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
-  projectRef.current = {format:'codeflow',version:1,source,fileName,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,labelSource:baseline.current?.session===documentSession.current?baseline.current.source:source};
+  const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
+  projectRef.current = {format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,labelSource:baseline.current?.session===documentSession.current?baseline.current.source:source};
   useEffect(()=>{document.documentElement.style.setProperty('--surface-opacity',`${100-transparency}%`);try{localStorage.setItem('codeflow.transparency',String(transparency));}catch{}},[transparency]);
   useEffect(()=>{if(documentStatus.kind!=='success')return;const timer=window.setTimeout(()=>setDocumentStatus({kind:'idle',message:''}),3000);return()=>clearTimeout(timer);},[documentStatus]);
   useEffect(()=>{void recentProjects().then(setRecent).catch(()=>undefined);},[]);
   useEffect(()=>{let active=true;const session=documentSession.current;void readRecovery().then(opened=>{
-    if(!active||!opened||documentSession.current!==session)return;const project=readProject(opened.contents);return inspectCpp(project.labelSource??project.source).then(savedFunctions=>{if(!active||documentSession.current!==session)return;baseline.current={source:project.labelSource??project.source,functions:savedFunctions,session};projectToken.current=opened.projectToken??null;
-    replaceSource(project.source);setFileName(project.fileName);setIncludeComments(project.includeComments);
+    if(!active||!opened||documentSession.current!==session)return;const project=readProject(opened.contents);return inspectCpp(project.labelSource??project.source,project.language).then(savedFunctions=>{if(!active||documentSession.current!==session)return;baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session};projectToken.current=opened.projectToken??null;
+    replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);
     loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions},project.history);setIsDirty(opened.sourceDirty??opened.dirty??true);setProjectDirty(opened.projectDirty??opened.dirty??true);});
   }).catch(cause=>{if(active){recoveryError.current=false;setDocumentStatus({kind:'error',message:`Recovery could not be opened: ${readError(cause)}`});}}).finally(()=>{if(active)setRecoveryReady(true);});return()=>{active=false;};},[loadHistory]);
-  useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{void saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,isDirty,projectDirty,recoveryReady]);
+  useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{void saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,isDirty,projectDirty,recoveryReady,language,chartView]);
 
   useEffect(() => {
     if(isDesktop) return;
@@ -160,7 +164,7 @@ export default function App() {
     setInspectedSource("");
     const timer = window.setTimeout(async () => {
       try {
-        const found = await inspectCpp(source);
+        const found = await inspectCpp(source,language);
         if (request !== inspectRequest.current || sourceRef.current!==source || documentSession.current!==session) return;
         const previous=baseline.current;
         const sameDocument=previous?.session===documentSession.current;
@@ -174,14 +178,14 @@ export default function App() {
             const editedFunctions=new Set((projectRef.current.history?.revisions.map(revision=>revision.state)??[oldState]).flatMap(state=>[...Object.keys(state.edits),...Object.keys(state.captions)].map(key=>key.replace(/:(?:overview|detail)$/,''))).concat(...(projectRef.current.history?.revisions.map(revision=>[...Object.keys(revision.state.loopOverrides),...Object.keys(revision.state.hiddenBoxes)])??[])));
             for(const [oldFunction,newFunction] of pairs){
               if(!editedFunctions.has(oldFunction.id)){mappings.push({before:oldFunction.id,after:newFunction.id,detail:new Map(),overview:new Map(),loops:new Map()});continue;}
-              const [oldGraph,newGraph]=await Promise.all([analyzeCpp(previous.source,oldFunction.id,true),analyzeCpp(source,newFunction.id,true)]);
+              const [oldGraph,newGraph]=await Promise.all([analyzeCpp(previous.source,oldFunction.id,true,language),analyzeCpp(source,newFunction.id,true,language)]);
               mappings.push(mapFunction(oldFunction.id,newFunction.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));
             }
           }catch{valid=false;}
           if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
           if(valid){
             labelLibrary.current=[{...previous,state:oldState},...labelLibrary.current].slice(0,10);
-            remapHistory(state=>remapChart(state,mappings));
+            remapHistory(state=>remapChartForLanguage(state,mappings,language));
             selectedMatch=pairs.find(([oldFunction])=>oldFunction.id===selectedFunction)?.[1].id;
           }else{
             // Keep last valid identities while incomplete typing cannot be analyzed.
@@ -195,16 +199,17 @@ export default function App() {
             for(const item of (await recentProjects()).slice(0,5))try{
               const project=readProject((await openRecentProject(item.id)).contents);
               if(!Object.keys(project.edits).length&&!Object.keys(project.captions).length)continue;
-              const savedSource=project.labelSource??project.source;const savedFunctions=await inspectCpp(savedSource);
-              labelLibrary.current.push({source:savedSource,functions:savedFunctions,state:{mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions}});
+              if((project.language??'cpp')!==language)continue;
+              const savedSource=project.labelSource??project.source;const savedFunctions=await inspectCpp(savedSource,language);
+              labelLibrary.current.push({source:savedSource,language,functions:savedFunctions,state:{mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions}});
             }catch{/* A missing recent project must not block editing. */}
           }
-          const candidates=labelLibrary.current;
+          const candidates=labelLibrary.current.filter(candidate=>candidate.language===language);
           for(const candidate of candidates){
             const pairs=matchFunctions(candidate.functions,found).filter(([item])=>Object.keys(candidate.state.edits).some(key=>key.startsWith(item.id+':'))||Object.keys(candidate.state.captions).some(key=>key.startsWith(item.id+':')));if(!pairs.length)continue;
             try{
               const mappings:FunctionMapping[]=[];
-              for(const [oldFunction,newFunction] of pairs){const [oldGraph,newGraph]=await Promise.all([analyzeCpp(candidate.source,oldFunction.id,true),analyzeCpp(source,newFunction.id,true)]);mappings.push(mapFunction(oldFunction.id,newFunction.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));}
+              for(const [oldFunction,newFunction] of pairs){const [oldGraph,newGraph]=await Promise.all([analyzeCpp(candidate.source,oldFunction.id,true,language),analyzeCpp(source,newFunction.id,true,language)]);mappings.push(mapFunction(oldFunction.id,newFunction.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));}
               if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
               const reused=remapChart(candidate.state,mappings);
               if(!Object.keys(reused.edits).length&&!Object.keys(reused.captions).length)continue;
@@ -214,7 +219,7 @@ export default function App() {
           }
         }
         if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
-        if(found.length)baseline.current={source,functions:found,session:documentSession.current};
+        if(found.length)baseline.current={source,language,functions:found,session:documentSession.current};
         setFunctions(found);
         if(selectedMatch)setSelectedFunction(selectedMatch);
         else setSelectedFunction((current) => found.some((item) => item.id === current) ? current : (found[0]?.id ?? ""));
@@ -231,7 +236,7 @@ export default function App() {
       }
     }, 260);
     return () => window.clearTimeout(timer);
-  }, [source,recoveryReady]);
+  }, [source,recoveryReady,language]);
 
   useEffect(() => {
     const request = ++analyzeRequest.current;
@@ -245,7 +250,7 @@ export default function App() {
     setIsAnalyzing(true);
     void (async () => {
       try {
-        const nextGraph = simplifyGraph(await analyzeCpp(source, selectedFunction, true));
+        const nextGraph = simplifyGraph(await analyzeCpp(source, selectedFunction, true,language));
         if (request !== analyzeRequest.current) return;
         setGraph(nextGraph); setGraphSource(source); setGraphFunction(selectedFunction);
 
@@ -261,7 +266,7 @@ export default function App() {
         if (request === analyzeRequest.current) setIsAnalyzing(false);
       }
     })();
-  }, [source, inspectedSource, selectedFunction, refreshKey]);
+  }, [source, inspectedSource, selectedFunction, refreshKey,language]);
 
   const loops = useMemo(() => analyzeLoops(graph), [graph]);
   const expandedGraph = useMemo(() => graphSource !== source || graphFunction !== selectedFunction ? {nodes:[],edges:[],diagnostics:[]} : overviewGraph(graph, {depth:loopDepth,overrides:loopOverrides[selectedFunction] ?? {}}), [graph,loopDepth,loopOverrides,graphSource,graphFunction,source,selectedFunction]);
@@ -317,11 +322,12 @@ export default function App() {
       }
     } catch(cause){setDocumentStatus({kind:'error',message:readError(cause)});}finally{savingProject.current=false;}
   };
-  const newProject=()=>{
-    if((isDirty||projectDirty)&&!window.confirm('Start a new project? Save unsaved work first.'))return;
+  const confirmReplace=async(message:string)=>isDesktop?(await import('@tauri-apps/plugin-dialog')).confirm(message,{title:'CodeFlow',kind:'warning'}):window.confirm(message);
+  const newProject=async()=>{
+    if((isDirty||projectDirty)&&!await confirmReplace('Start a new project? Save unsaved work first.'))return;
     if(baseline.current)labelLibrary.current=[{...baseline.current,state:chartRef.current},...labelLibrary.current].slice(0,10);
     documentSession.current++;openRequest.current++;saveRequest.current++;projectToken.current=null;recoveryError.current=false;
-    replaceSource('');setFileName('untitled.cpp');loadHistory(defaultChartState());setIsDirty(false);setProjectDirty(false);setSelectedNodeId('');setSelectedLine(null);setDocumentStatus({kind:'idle',message:''});
+    replaceSource('');setFileName(language==='cpp'?'untitled.cpp':'untitled.cs');setChartView('function');loadHistory(defaultChartState());setIsDirty(false);setProjectDirty(false);setSelectedNodeId('');setSelectedLine(null);setDocumentStatus({kind:'idle',message:''});
   };
 
   const selectedName = functions.find((item) => item.id === selectedFunction)?.name ?? "flowchart";
@@ -330,27 +336,28 @@ export default function App() {
   const openFile = useCallback(async (file?: File, token:string|null=null, confirmed=false) => {
     if (!file) return;
     try {
-      if (!confirmed && (isDirty || projectDirty) && !window.confirm('Replace this document? Save source or project first to keep unsaved work.')) return;
+      if (!confirmed && (isDirty || projectDirty) && !await confirmReplace('Replace this document? Save source or project first to keep unsaved work.')) return;
       if(file.size > 16 * 1024 * 1024) throw new Error('File is larger than 16 MB.');
       const request = ++openRequest.current;
       const before = projectRef.current;
+      const session = documentSession.current;
       const contents = await file.text();
-      if(request !== openRequest.current) return;
+      if(request !== openRequest.current || session !== documentSession.current) return;
       const now = projectRef.current;
-      if(before.source!==now.source || before.fileName!==now.fileName || before.edits!==now.edits || before.captions!==now.captions || before.mode!==now.mode || before.loopDepth!==now.loopDepth || before.loopOverrides!==now.loopOverrides || before.hiddenBoxes!==now.hiddenBoxes || before.showHiddenBoxes!==now.showHiddenBoxes || before.functionPositions!==now.functionPositions || before.history!==now.history || before.includeComments!==now.includeComments) {
+      if(before.language!==now.language || before.view!==now.view || before.source!==now.source || before.fileName!==now.fileName || before.edits!==now.edits || before.captions!==now.captions || before.mode!==now.mode || before.loopDepth!==now.loopDepth || before.loopOverrides!==now.loopOverrides || before.hiddenBoxes!==now.hiddenBoxes || before.showHiddenBoxes!==now.showHiddenBoxes || before.functionPositions!==now.functionPositions || before.history!==now.history || before.includeComments!==now.includeComments) {
         setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'}); return;
       }
       inspectRequest.current++;analyzeRequest.current++;
       saveRequest.current += 1;
       if(file.name.endsWith('.codeflow')) {
         const project = readProject(contents);
-        const savedFunctions=await inspectCpp(project.labelSource??project.source);if(request!==openRequest.current||JSON.stringify(projectRef.current)!==JSON.stringify(before))return;
-        baseline.current={source:project.labelSource??project.source,functions:savedFunctions,session:documentSession.current+1};
-        replaceSource(project.source);setFileName(project.fileName);setIncludeComments(project.includeComments);
+        const savedFunctions=await inspectCpp(project.labelSource??project.source,project.language);if(request!==openRequest.current||JSON.stringify(projectRef.current)!==JSON.stringify(before))return;
+        baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session:documentSession.current+1};
+        replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);
         loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions},project.history);
       } else {
-        if(new TextEncoder().encode(contents).length > 2 * 1024 * 1024) throw new Error('C++ source must be smaller than 2 MB.');
-        replaceSource(contents);setFileName(file.name);loadHistory(defaultChartState());
+        if(new TextEncoder().encode(contents).length > 2 * 1024 * 1024) throw new Error('Source must be smaller than 2 MB.');
+        replaceSource(contents);setFileName(file.name);setLanguage(/\.cs$/i.test(file.name)?'csharp':'cpp');setChartView('function');loadHistory(defaultChartState());baseline.current=null;
       }
       documentSession.current++;projectToken.current=token;recoveryError.current=false;
       setProjectDirty(false); setSelectedNodeId('');
@@ -363,7 +370,7 @@ export default function App() {
   }, [isDirty, projectDirty,loadHistory]);
   const openChooser=async(id?:string)=>{
     if(!isDesktop){fileInputRef.current?.click();return;}
-    if((isDirty||projectDirty)&&!window.confirm('Replace this document? Save unsaved work first.'))return;
+    if((isDirty||projectDirty)&&!await confirmReplace('Replace this document? Save unsaved work first.'))return;
     const snapshot=JSON.stringify(projectRef.current);const request=++openRequest.current;
     try{const opened=id?await openRecentProject(id):await openDocument();if(!opened)return;
       if(request!==openRequest.current||JSON.stringify(projectRef.current)!==snapshot){setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'});return;}
@@ -372,11 +379,11 @@ export default function App() {
   };
 
   const saveSource = useCallback(async (): Promise<boolean> => {
-    const cleanName = fileName.replace(/\s*\*$/, "") || "untitled.cpp";
+    const cleanName = fileName.replace(/\s*\*$/, "") || (language==='cpp'?"untitled.cpp":"untitled.cs");
     const contents = source;
     const request = ++saveRequest.current;
     try {
-      const saved = await saveDocument(cleanName, contents, "cpp");
+      const saved = await saveDocument(cleanName, contents, language==='cpp'?"cpp":"cs");
       if (request !== saveRequest.current) return saved;
       if (!saved) {
         setDocumentStatus({ kind: "info", message: "Save canceled." });
@@ -397,7 +404,7 @@ export default function App() {
       setDocumentStatus({ kind: "error", message: `Save failed: ${readError(cause)}` });
       return false;
     }
-  }, [fileName, source]);
+  }, [fileName, source,language]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -538,12 +545,19 @@ export default function App() {
     if(node.id!==selectedNodeId){const flow=flowRef.current;if(flow){const zoom=flow.getZoom();void flow.setCenter(node.position.x+(node.width??288)/2,node.position.y+(node.height??80)/2,{zoom,duration:150});}}
     setSelectedNodeId(node.id);revealNode(node);
   },[revealNode,selectedNodeId]);
+  const lastProgramSelection=useRef('');
+  useEffect(()=>{
+    if(chartView!=='program'||!selectedNodeId){lastProgramSelection.current='';return;}
+    const key=selectedFunction+'\0'+selectedNodeId;if(lastProgramSelection.current===key)return;
+    const node=canvasNodes.find(item=>item.id===selectedNodeId);if(!node||graphFunction!==selectedFunction)return;
+    lastProgramSelection.current=key;revealNode(node);
+  },[chartView,selectedFunction,selectedNodeId,graphFunction,canvasNodes,revealNode]);
   const clearSelection=()=>{setSelectedNodeId('');setSelectedLine(null);const editor=textareaRef.current;if(editor)editor.setSelectionRange(editor.selectionEnd,editor.selectionEnd);};
   const highlightStart=selectedNode?source.slice(0,byteToStringIndex(source,selectedNode.start_byte)).split('\n').length-1:0;
   const highlightLines=selectedNode?Math.max(1,source.slice(byteToStringIndex(source,selectedNode.start_byte),byteToStringIndex(source,selectedNode.end_byte)).split('\n').length):0;
 
   const exportGraph = useCallback(async (format:'svg'|'png'='svg') => {
-    const svg = fileView ? boardSvg : createSvgDocument(canvasNodes, canvasEdges, mode,svgPaletteFromCss());
+    const svg = boardView ? boardSvg : createSvgDocument(canvasNodes, canvasEdges, mode,svgPaletteFromCss());
     if (!svg) return;
     try {
       const saved = await saveDocument(svgDocumentName(selectedName),format==='png'?await createPngDataUrl(svg):svg,format);
@@ -553,60 +567,33 @@ export default function App() {
     } catch (cause) {
       setDocumentStatus({ kind: "error", message: `Export failed: ${readError(cause)}` });
     }
-  }, [canvasNodes, canvasEdges, selectedName, mode,fileView,boardSvg]);
+  }, [canvasNodes, canvasEdges, selectedName, mode,boardView,boardSvg]);
 
   const statusText = error
     ? error
     : isInspecting || isAnalyzing
-      ? "Analyzing C++…"
+      ? `Analyzing ${language==='cpp'?'C++':'C#'}…`
       : functions.length === 0
         ? "No functions found"
-        : `${viewGraph.nodes.length} boxes · ${viewGraph.edges.length} paths`;
+        : boardView ? `${functions.length} functions` : `${viewGraph.nodes.length} boxes · ${viewGraph.edges.length} paths`;
 
   return (
     <main inert={!recoveryReady} className={`app-shell mode-${mode}`}>
-      <header className="topbar" data-tauri-drag-region>
-        <div className="brand" aria-label="CodeFlow">
-          <span className="brand__mark"><span /> <span /> <span /></span>
-          <span>CodeFlow</span>
-          <span className="brand__language">C++</span>
-        </div>
-        <div className="toolbar">
-          <ThemePicker />
-          <label className="transparency-control" title="Window background transparency"><span>Transparency</span><input aria-label="Transparency" type="range" min="0" max="80" value={transparency} onChange={e=>setTransparency(Number(e.target.value))}/><output>{transparency}%</output></label>
-          <input
-            ref={fileInputRef}
-            className="visually-hidden"
-            type="file"
-            accept=".codeflow,.cpp,.cc,.cxx,.h,.hh,.hpp,.hxx,text/plain"
-            onChange={(event) => void openFile(event.target.files?.[0])}
-          />
-          <button className="button" disabled={!recoveryReady} onClick={newProject}>New project</button>
-          <button className="button" disabled={!recoveryReady} onClick={() => void openChooser()} title="Open file (Ctrl/⌘ O)">
-            <Icon name="file" /> <span>Open</span>
-          </button>
-          <details className="recent-menu"><summary className="button">Recent projects</summary><div>{recent.length?recent.map(item=><button className="button" key={item.id} disabled={!recoveryReady} onClick={event=>{event.currentTarget.closest('details')!.open=false;void openChooser(item.id);}}>{item.name}</button>):<span>No recent projects</span>}</div></details>
-          <button className="button" onClick={() => void saveSource()} title="Save C++ source">
-            <Icon name="save" /> <span>Save C++</span>
-          </button>
-          <button className="button" onClick={()=>void saveProject()} title="Save project (Ctrl/⌘ S)">Save project</button>
-          <button className="button" onClick={()=>void saveProject(true)}>Save as</button>
-          <button className="button button--icon" onClick={() => setRefreshKey((value) => value + 1)} title="Analyze (Ctrl/⌘ Enter)" aria-label="Analyze again">
-            <Icon name="refresh" />
-          </button>
-          <button
-            className="button button--primary"
-            disabled={fileView?!boardSvg:canvasNodes.length===0}
-            onClick={() => void exportGraph()}
-          >
-            <Icon name="export" /> <span>Export SVG</span>
-          </button>
-          <button className="button" disabled={fileView?!boardSvg:!canvasNodes.length} onClick={()=>void exportGraph('png')}>Export PNG</button>
-          <button className="button button--icon" disabled={updateStatus.kind === "checking" || updateStatus.kind === "downloading" || updateStatus.kind === "installing"} onClick={() => void checkForUpdates()} title="Check for updates" aria-label="Check for updates">
-            <Icon name="update" />
-          </button>
-        </div>
-      </header>
+      <AppToolbar language={language} onLanguageChange={next=>{
+        if(next===language)return;
+        setBoardSvg('');
+        if(baseline.current)labelLibrary.current=[{...baseline.current,state:chartRef.current},...labelLibrary.current].slice(0,10);
+        documentSession.current++;inspectRequest.current++;analyzeRequest.current++;baseline.current=null;libraryLoaded.current=false;
+        setLanguage(next);setFileName(name=>name.replace(/\.(?:cpp|cc|cxx|cs)$/i,next==='cpp'?'.cpp':'.cs'));
+        setFunctions([]);setSelectedFunction('');setInspectedSource('');setShowAI(false);clearSelection();setProjectDirty(true);
+      }} recentProjects={recent} onNewProject={()=>void newProject()} onOpen={()=>void openChooser()} onOpenRecent={id=>void openChooser(id)}
+        onSaveSource={()=>void saveSource()} onSaveProject={()=>void saveProject()} onSaveAs={()=>void saveProject(true)}
+        onAnalyze={()=>setRefreshKey(value=>value+1)} onExportSvg={()=>void exportGraph()} onExportPng={()=>void exportGraph('png')}
+        onCheckUpdates={()=>void checkForUpdates()} transparency={transparency} onTransparencyChange={setTransparency}
+        recoveryReady={recoveryReady} exportReady={boardView?!!boardSvg:canvasNodes.length>0}
+        updateBusy={['checking','downloading','installing'].includes(updateStatus.kind)}/>
+      <input ref={fileInputRef} className="visually-hidden" type="file" accept=".codeflow,.cpp,.cc,.cxx,.h,.hh,.hpp,.hxx,.cs,text/plain" onChange={event=>void openFile(event.target.files?.[0])}/>
+
 
       {updateStatus.kind !== "idle" && (
         <aside className={`update-banner update-banner--${updateStatus.kind}`} role={updateStatus.kind === "error" ? "alert" : "status"} aria-live="polite">
@@ -641,8 +628,8 @@ export default function App() {
           }}
         >
           <div className="panel__header">
-            <div className="file-name"><span className="file-name__dot" /><input aria-label="C++ filename" value={fileName} maxLength={240} onChange={e=>{setFileName(e.target.value);setProjectDirty(true);}} onBlur={()=>{if(!fileName.trim())setFileName('untitled.cpp');}}/>{isDirty || projectDirty ? " *" : ""}</div>
-            <span className="panel__hint">Drop or paste C++</span>
+            <div className="file-name"><span className="file-name__dot" /><input aria-label={language==='cpp'?"C++ filename":"C# filename"} value={fileName} maxLength={240} onChange={e=>{setFileName(e.target.value);setProjectDirty(true);}} onBlur={()=>{if(!fileName.trim())setFileName(language==='cpp'?'untitled.cpp':'untitled.cs');}}/>{isDirty || projectDirty ? " *" : ""}</div>
+            <span className="panel__hint">Drop or paste {language==='cpp'?'C++':'C#'}</span>
           </div>
           <div className="editor-wrap">
             {selectedNode && <div className="source-highlight" aria-hidden="true" style={{top:18+highlightStart*22-sourceScrollTop,height:highlightLines*22}}/>}
@@ -653,7 +640,7 @@ export default function App() {
             </div>
             <textarea
               ref={textareaRef}
-              aria-label="C++ source code"
+              aria-label={language==='cpp'?"C++ source code":"C# source code"}
               value={source}
               spellCheck={false}
               disabled={!recoveryReady}
@@ -671,20 +658,20 @@ export default function App() {
 
         <section className="panel chart-panel">
           <div className="chart-options">
-            <label>View <select aria-label="Chart view" value={fileView?'file':'function'} onChange={event=>{setFileView(event.target.value==='file');setShowAI(false);clearSelection();}}><option value="function">Function</option><option value="file">File map</option></select></label>
+            <label>View <select aria-label="Chart view" value={chartView} onChange={event=>{setChartView(event.target.value as ChartView);setBoardSvg('');setShowAI(false);clearSelection();setProjectDirty(true);}}><option value="function">Function</option><option value="file">File map</option><option value="program">Whole program</option></select></label>
             <label>Labels <select aria-label="Label mode" value={mode} onChange={e=>{setMode(e.target.value as ChartMode);setProjectDirty(true);}}><option value="natural">Natural language</option><option value="code">Code</option></select></label>
-            <button className="button" onClick={()=>setShowAI(current=>!current)} disabled={fileView}>Local AI</button>
-            <button className="button" aria-pressed={highlightUnmodified} onClick={()=>setHighlightUnmodified(value=>!value)}>Highlight unmodified labels</button>
             <label>Loop depth <select aria-label="Loop expansion depth" value={loopDepth ?? 'all'} onChange={e=>{setLoopDepth(e.target.value==='all'?null:Number(e.target.value));setLoopOverrides({});setProjectDirty(true);}}>
               <option value="0">0 · overview</option>
               {Array.from({length:Math.max(3,loopDepth ?? 0,...loops.map(loop=>loop.depth+1))},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}
               <option value="all">All</option>
             </select></label>
-            <label><input type="checkbox" checked={showHiddenBoxes} onChange={e=>{change('showHiddenBoxes',e.target.checked,'Show hidden boxes');setProjectDirty(true);}}/> Show hidden boxes</label>
-            <button className="button" disabled={!history.revisions.find(r=>r.id===history.active)?.parent} onClick={()=>{selectRevision(history.revisions.find(r=>r.id===history.active)!.parent!);setProjectDirty(true);}}>Undo</button>
-            <button className="button" onClick={()=>setShowHistory(v=>!v)}>History</button>
-            <button className="button" onClick={()=>{createAlternate();setProjectDirty(true);}}>Alternate</button>
-            <button className="button" onClick={()=>{resetChart();setSelectedNodeId('');setProjectDirty(true);}}>Reset chart</button>
+            <ChartTools localAIActive={showAI} localAIDisabled={fileView} highlightUnmodified={highlightUnmodified} showHiddenBoxes={showHiddenBoxes}
+              canUndo={!!history.revisions.find(r=>r.id===history.active)?.parent} historyOpen={showHistory}
+              onToggleLocalAI={()=>setShowAI(value=>!value)} onHighlightUnmodifiedChange={setHighlightUnmodified}
+              onShowHiddenBoxesChange={value=>{change('showHiddenBoxes',value,'Show hidden boxes');setProjectDirty(true);}}
+              onUndo={()=>{selectRevision(history.revisions.find(r=>r.id===history.active)!.parent!);setProjectDirty(true);}}
+              onToggleHistory={()=>setShowHistory(value=>!value)} onAlternate={()=>{createAlternate();setProjectDirty(true);}}
+              onResetChart={()=>{resetChart();clearSelection();setProjectDirty(true);}}/>
           </div>
           <div className="chart-toolbar">
             <label className="field">
@@ -702,7 +689,12 @@ export default function App() {
           </div>
 
           <div className="chart-canvas">
-            {fileView && inspectedSource===source && functions.length ? <FunctionBoard source={source} functions={functions} mode={mode} highlightUnmodified={highlightUnmodified} includeComments={includeComments} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange functions');setProjectDirty(true);}} onOpenFunction={id=>{setSelectedFunction(id);setFileView(false);clearSelection();}} onExportReady={setBoardSvg}/> : canvasNodes.length > 0 ? (
+            {chartView==='program' && inspectedSource===source && functions.length ? <ProgramBoard source={source} language={language} functions={functions} mode={mode}
+              includeComments={includeComments} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes}
+              highlightUnmodified={highlightUnmodified} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange program');setProjectDirty(true);}}
+              onSelect={({functionId,nodeId})=>{setSelectedFunction(functionId);setSelectedNodeId(nodeId??'');setShowAI(false);if(!nodeId)setChartView('function');}}
+              selectedFunctionId={selectedFunction} selectedNodeId={selectedNodeId} onClearSelection={clearSelection}
+              onExportReady={setBoardSvg}/> : fileView && inspectedSource===source && functions.length ? <FunctionBoard language={language} source={source} functions={functions} mode={mode} highlightUnmodified={highlightUnmodified} includeComments={includeComments} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange functions');setProjectDirty(true);}} onOpenFunction={id=>{setSelectedFunction(id);setChartView('function');clearSelection();}} onExportReady={setBoardSvg}/> : canvasNodes.length > 0 ? (
               <ReactFlow<CanvasNode>
                 nodes={canvasNodes}
                 edges={canvasEdges}
@@ -735,7 +727,7 @@ export default function App() {
             ) : (
               <div className="empty-state">
                 <div className="empty-state__glyph"><span /><span /><span /></div>
-                <strong>{error ? "Couldn’t build chart" : "Add a C++ function"}</strong>
+                <strong>{error ? "Couldn’t build chart" : "Add code"}</strong>
                 <span>{error || "Open a file or paste source to see its control flow."}</span>
               </div>
             )}
@@ -754,7 +746,7 @@ export default function App() {
         <label>{mode==='code'?'Code label':'Natural language label'}<textarea aria-label="Box label" maxLength={2000} value={selectedNode.label} onChange={e=>editNode(mode,e.target.value)}/></label>
         <label className="flag-box"><input type="checkbox" checked={selectedNode.flagged??false} onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],flagged:event.target.checked}}}));setProjectDirty(true);}}/> Flag for removal</label>
         <label>Annotation<textarea aria-label="Box annotation" maxLength={2000} value={selectedNode.annotation ?? ''} onChange={e=>editNode('annotation',e.target.value)}/></label>
-        <details><summary>Original C++</summary><pre>{source.slice(byteToStringIndex(source,selectedNode.start_byte),byteToStringIndex(source,selectedNode.end_byte))}</pre></details>
+        <details><summary>Original {language==='cpp'?'C++':'C#'}</summary><pre>{source.slice(byteToStringIndex(source,selectedNode.start_byte),byteToStringIndex(source,selectedNode.end_byte))}</pre></details>
         {!['start','end','return','throw'].includes(selectedNode.kind) && <button className="button" onClick={()=>{change('hiddenBoxes',current=>{const list=current[selectedFunction]??[];return {...current,[selectedFunction]:list.includes(selectedNode.id)?list.filter(id=>id!==selectedNode.id):[...list,selectedNode.id]};},selectedNode.hidden?'Restore box':'Hide box');setProjectDirty(true);setSelectedNodeId('');}}>{selectedNode.hidden?'Restore box':'Hide box'}</button>}
         <button className="button" onClick={()=>{setEdits(current=>{const next={...current,[editKey]:{...current[editKey]}};delete next[editKey][selectedNodeId];return next;});setProjectDirty(true);}}>Reset box</button>
       </aside>}

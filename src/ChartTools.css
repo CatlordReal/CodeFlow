@@ -1,0 +1,108 @@
+.chart-tools {
+  position: relative;
+  z-index: 40;
+}
+
+.chart-tools > summary {
+  list-style: none;
+}
+
+.chart-tools > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chart-tools > summary svg {
+  width: 12px;
+  height: 12px;
+  transition: transform .15s ease;
+}
+
+.chart-tools[open] > summary svg {
+  transform: rotate(180deg);
+}
+
+.chart-tools__menu {
+  position: absolute;
+  z-index: 160;
+  top: calc(100% + 7px);
+  right: 0;
+  width: 230px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel) 97%, transparent);
+  box-shadow: 0 16px 42px var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.chart-tools__menu button,
+.chart-tools__check {
+  width: 100%;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  background: transparent;
+  font: 600 11px/16px ui-sans-serif, system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chart-tools__menu button:hover:not(:disabled),
+.chart-tools__menu button:focus-visible,
+.chart-tools__check:hover,
+.chart-tools__check:focus-within {
+  outline: none;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chart-tools__menu button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chart-tools__menu button[aria-pressed="true"]::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.chart-tools__menu button:disabled {
+  cursor: default;
+  opacity: .42;
+}
+
+.chart-tools__check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.chart-tools__divider {
+  height: 1px;
+  margin: 4px 3px;
+  background: var(--line);
+}
+
+@media (max-width: 820px) {
+  .chart-tools__menu {
+    right: auto;
+    left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart-tools > summary svg { transition: none; }
+}

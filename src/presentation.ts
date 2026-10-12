@@ -1,5 +1,5 @@
 import type {ChartHistory} from './history';
-import type { FlowGraph, FlowNode } from './types';
+import type { FlowGraph, FlowNode, SourceLanguage, ChartView } from './types';
 
 export type ChartMode = 'code' | 'natural';
 export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean };
@@ -38,7 +38,7 @@ export function presentLoopEdgeLabels(graph: FlowGraph): FlowGraph {
     .filter(node => node.kind === 'loop')
     .map(node => [node.id, {
       condition: node.loop_condition?.trim() || null,
-      range: /^for\s*\([^;]*:[^;]*\)$/s.test(node.original_label ?? node.label),
+      range: /^(?:for\s*\([^;]*:[^;]*\)|foreach\s*\(.*\bin\b.*\))$/s.test(node.original_label ?? node.label),
     }]));
   return {
     ...graph,
@@ -57,13 +57,15 @@ export function nodePresentationKey(functionId: string, node: FlowNode, depth: n
   return functionId + ((node.loop_id ? !node.loop_collapsed : depth === null) ? ':detail' : ':overview');
 }
 
-export type Project = { format: 'codeflow'; version: 1; source: string; fileName: string; mode: ChartMode; edits: ChartEdits; captions: CaptionSets; expandLoops: boolean; includeComments: boolean; loopDepth: number | null; loopOverrides: LoopOverrides; hiddenBoxes: Record<string,string[]>; showHiddenBoxes: boolean; functionPositions: Record<string,{x:number;y:number}>; history?: ChartHistory; labelSource?:string };
+export type Project = { format: 'codeflow'; version: 1; source: string; fileName: string; language?: SourceLanguage; view?: ChartView; mode: ChartMode; edits: ChartEdits; captions: CaptionSets; expandLoops: boolean; includeComments: boolean; loopDepth: number | null; loopOverrides: LoopOverrides; hiddenBoxes: Record<string,string[]>; showHiddenBoxes: boolean; functionPositions: Record<string,{x:number;y:number}>; history?: ChartHistory; labelSource?:string };
 export function readProject(text: string): Project {
   if (text.length > 16 * 1024 * 1024) throw new Error('Project is larger than 16 MB.');
   const value = JSON.parse(text);
   if (value?.format !== 'codeflow' || value.version !== 1 || typeof value.source !== 'string'
     || new TextEncoder().encode(value.source).length > 2 * 1024 * 1024
     || typeof value.fileName !== 'string' || !value.fileName.trim() || value.fileName.length > 240 || /[\x00-\x1f]/.test(value.fileName) || !['code','natural'].includes(value.mode)) throw new Error('Invalid CodeFlow project.');
+  value.language ??= 'cpp'; value.view ??= 'function';
+  if(!['cpp','csharp'].includes(value.language) || !['function','file','program'].includes(value.view)) throw new Error('Invalid project language or view.');
   const records = (input: unknown, captions: boolean) => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid project edits.');
     const validKey = (key: string) => key.length > 0 && key.length <= 160 && !/[\x00-\x1f]/.test(key) && !['__proto__','constructor','prototype'].includes(key);
@@ -122,6 +124,8 @@ export function readProject(text: string): Project {
 }
 
 export function loopCaption(label: string): string {
+  const each = /^foreach\s*\(.*?\b(\w+)\s+in\s+(.+)\)$/.exec(label);
+  if(each) return `For each ${each[1]} in ${each[2]}`;
   const range = /^for\s*\(.*?\b(\w+)\s*:\s*(.+)\)$/.exec(label);
   if (range) return `For each ${range[1]} in ${range[2]}`;
   const count = /^for\s*\([^;]*?\b(\w+)\s*=\s*([^;]+);\s*([^;]+);\s*(.*?)\)$/.exec(label);

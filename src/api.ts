@@ -1,12 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { FlowGraph, FunctionInfo } from "./types";
+import type { FlowGraph, FunctionInfo, SourceLanguage } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
-export async function inspectCpp(source: string): Promise<FunctionInfo[]> {
+export async function inspectCpp(source: string, language: SourceLanguage = 'cpp'): Promise<FunctionInfo[]> {
   if (isTauri()) {
-    return invoke<FunctionInfo[]>("inspect_cpp", { source });
+    return language === "cpp" ? invoke<FunctionInfo[]>("inspect_cpp", { source }) : invoke<FunctionInfo[]>("inspect_code", { source, language });
   }
+  if(language === "csharp") throw new Error("C# analysis runs in the desktop app.");
   return previewFunctions(source);
 }
 
@@ -14,26 +15,29 @@ export async function analyzeCpp(
   source: string,
   functionId: string,
   includeComments: boolean,
+  language: SourceLanguage = 'cpp',
 ): Promise<FlowGraph> {
   if (isTauri()) {
-    return invoke<FlowGraph>("analyze_cpp", { source, functionId, includeComments });
+    return language === "cpp" ? invoke<FlowGraph>("analyze_cpp", { source, functionId, includeComments }) : invoke<FlowGraph>("analyze_code", { source, functionId, includeComments, language });
   }
+  if(language === "csharp") throw new Error("C# analysis runs in the desktop app.");
   return previewGraph(source, includeComments);
 }
 
 export async function saveDocument(
   name: string,
   contents: string,
-  extension: "cpp" | "svg" | "png" | "codeflow",
+  extension: "cpp" | "cs" | "svg" | "png" | "codeflow",
 ): Promise<boolean> {
   const hasExtension = extension === "cpp"
     ? /\.(?:cpp|cc|cxx|h|hh|hpp|hxx)$/i.test(name)
+    : extension === "cs" ? /\.cs$/i.test(name)
     : name.toLowerCase().endsWith(`.${extension}`);
   const fileName = hasExtension ? name : `${name}.${extension}`;
   if (isTauri()) {
     return invoke<boolean>("save_document", { name: fileName, contents, extension });
   }
-  const mime = extension === "svg" ? "image/svg+xml" : extension === "png" ? "image/png" : "text/x-c++src;charset=utf-8";
+  const mime = extension === "svg" ? "image/svg+xml" : extension === "png" ? "image/png" : extension === "cs" ? "text/x-csharp;charset=utf-8" : "text/x-c++src;charset=utf-8";
   const blob = extension === "png" ? await (await fetch(contents)).blob() : new Blob([contents], { type: mime });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -109,5 +113,5 @@ let recoveryGeneration=0;
 export async function saveRecovery(contents:string,projectToken:string|null,dirty=true,sourceDirty=dirty,projectDirty=dirty):Promise<void>{if(isTauri())await invoke('save_recovery',{contents,projectToken,dirty,sourceDirty,projectDirty,generation:++recoveryGeneration});}
 export async function readRecovery():Promise<OpenedDocument|null>{return isTauri()?invoke('read_recovery'):null;}
 
-export type FunctionReference={source:string;target:string;label:string};
-export async function functionReferences(source:string):Promise<FunctionReference[]>{return isTauri()?invoke('function_references',{source}):[];}
+export type FunctionReference={source:string;target:string;label:string;start_byte?:number;end_byte?:number};
+export async function functionReferences(source:string,language:SourceLanguage='cpp'):Promise<FunctionReference[]>{return isTauri()?invoke(language==='cpp'?'function_references':'code_references',{source,language}):[];}

@@ -1,6 +1,6 @@
 # CodeFlow
 
-CodeFlow turns C++ functions into interactive flowcharts. Parsing and layout run locally without an account or API key. Optional AI captions use a local Ollama model.
+CodeFlow turns C++ functions and C# methods into interactive flowcharts. Parsing and layout run locally without an account or API key. Optional AI captions use a local Ollama model.
 
 ## Install on Windows
 
@@ -21,7 +21,7 @@ Keep the AppImage in a user-writable directory so CodeFlow can install signed up
 
 ## Flowcharts
 
-Open a C++ source file or paste code into the editor, then choose a function. CodeFlow provides:
+Choose **C++** or **C#** beside the app name, open a source file or paste code, then choose a function. `.cs` files select C# automatically. CodeFlow provides:
 
 - Conventional flowchart symbols with exact parser-derived decisions and paths.
 - Loop depth controls for overview, nested levels, or full expansion.
@@ -34,15 +34,29 @@ Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects
 
 ## Projects and recovery
 
-**New project** starts a clean document. **Open** accepts C++ source or `.codeflow` projects. **Save project** chooses a target on the first save, then writes to the same approved target; **Save as** chooses another target. **Recent projects** reopens previously saved projects. `Ctrl+S` or `⌘S` saves the project, and the filename can be edited in the source header. **Save C++** saves source only.
+**Project > New project** starts a clean document. **Project > Open** accepts C++ or C# source and `.codeflow` projects. **Save project** chooses a target on the first save, then writes to the same approved target; **Save as** chooses another target. **Recent projects** reopens previously saved projects. `Ctrl+S` or `⌘S` saves the project, and the filename can be edited in the source header. **Project > Save C++ / Save C#** saves source only.
 
-A `.codeflow` project stores source, filename, labels, annotations, flags, hidden boxes, loop settings, file-map positions, and history. CodeFlow also keeps a current recovery copy and restores it on launch. Immediately before installing an update, CodeFlow saves recovery again so unsaved current work can return after restart.
+A `.codeflow` project stores source, filename, source language, chart view, labels, annotations, flags, hidden boxes, loop settings, board positions, and history. Older projects default to C++ and Function view. CodeFlow also keeps a current recovery copy and restores it on launch. Immediately before installing an update, CodeFlow saves recovery again so unsaved current work can return after restart.
 
 ## History and label preservation
 
 Chart edits create a branching history of up to 500 revisions. **Undo** selects the parent revision, **History** opens the revision graph, **Alternate** starts another branch from the selected revision, and **Reset chart** records a reset as a new revision. History persists in `.codeflow` projects.
 
 CodeFlow preserves labels, annotations, flags, and layout when matching code remains unchanged across edits, comment changes, and pasted revisions. Matching uses source identities rather than box numbers. It searches up to 5 recent projects plus 10 versions retained during the current session. Ambiguous matches, including duplicate or overloaded identities that cannot be distinguished conservatively, are omitted rather than attached to different code.
+
+## Whole program
+
+Choose **View > Whole program** to put every function or method in the current editor on one canvas. Each function has a draggable group with individual flowchart boxes. Main is shown first with an entry marker, and resolved calls use dashed links from their source boxes. Edit labels and annotations directly on the board; the matching source remains highlighted. Board positions, comments, loop depth, hidden boxes, and edits use the same project history and themed SVG/PNG export.
+
+The board covers the current pasted or opened code. Call links are conservative source-level hints, not compiler binding or an execution trace. Ambiguous calls, dynamic dispatch, and external definitions are omitted.
+
+## C#
+
+C# uses its own Tree-sitter grammar and needs no .NET installation. It handles methods, constructors, local functions, top-level statements, expression bodies, branches, loops, switches, and terminal paths. Standard Console input/output receives I/O symbols. Unsupported control flow, including try/catch, goto, async/await, yield, lock, using/fixed/unsafe statements, conditional compilation, checked blocks, and switch/conditional expressions, produces a diagnostic instead of a guessed chart.
+
+## Menus
+
+The top bar groups **Project**, **Appearance**, **Export**, and **More** actions, with **Save project** kept directly accessible. Chart **Tools** contains AI captions, hidden-box controls, label highlighting, history, and reset actions. View, label mode, loop depth, and comments remain visible.
 
 ## File map
 
@@ -52,7 +66,7 @@ These reference lines are source-level hints, not compiler name resolution. Code
 
 ## Local AI captions
 
-Install and run [Ollama](https://ollama.com/download), then open **Local AI**. Choose an installed supported model or explicitly download one: Qwen 2.5 0.5B, Qwen 2.5 3B, or Qwen 3.5 4B. Model downloads require internet access and disk space; inference stays on `127.0.0.1`. CodeFlow rejects Ollama cloud model aliases.
+Install and run [Ollama](https://ollama.com/download), then open **Tools > Local AI**. Choose an installed supported model or explicitly download one: Qwen 2.5 0.5B, Qwen 2.5 3B, or Qwen 3.5 4B. Model downloads require internet access and disk space; inference stays on `127.0.0.1`. CodeFlow rejects Ollama cloud model aliases.
 
 AI generates caption proposals for process and input/output steps, including collapsed loops. Every proposal starts unaccepted and shows the existing label beside the proposed label. Review and optionally edit each proposal, then accept or decline it individually or use **Accept all** and **Decline all**. Only accepted proposals are applied. If source, chart structure, or displayed labels change during review, pending proposals are invalidated.
 
@@ -60,7 +74,7 @@ Decision tests, terminal paths, and graph structure remain parser-derived. AI ca
 
 ## Appearance
 
-Themes include System, Light, Dark; Catppuccin Latte, Frappé, Macchiato, Mocha; and Sand, Dawn Paper, Golden Sand, Golden Paper, Sunset, Dusk. Manual choices persist, and System follows the operating system.
+**Appearance** contains theme and transparency controls. Themes include System, Light, Dark; Catppuccin Latte, Frappé, Macchiato, Mocha; and Sand, Dawn Paper, Golden Sand, Golden Paper, Sunset, Dusk. Manual choices persist, and System follows the operating system.
 
 On Windows, **Wallpaper** derives a palette from the current desktop wallpaper. It checks every 5 seconds and reuses the cached result while the wallpaper path, modification time, and size remain unchanged.
 

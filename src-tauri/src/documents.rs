@@ -306,6 +306,24 @@ fn validate_history(value: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_language_and_view(
+    project: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if project
+        .get("language")
+        .is_some_and(|value| !matches!(value.as_str(), Some("cpp" | "csharp")))
+    {
+        return Err("Invalid source language.".into());
+    }
+    if project
+        .get("view")
+        .is_some_and(|value| !matches!(value.as_str(), Some("function" | "file" | "program")))
+    {
+        return Err("Invalid project view.".into());
+    }
+    Ok(())
+}
+
 fn validate_recovery_project(contents: &str) -> Result<(), String> {
     if contents.len() > PROJECT_LIMIT {
         return Err("Recovery project is too large.".into());
@@ -350,6 +368,7 @@ fn validate_recovery_project(contents: &str) -> Result<(), String> {
     if let Some(history) = project.get("history") {
         validate_history(history)?;
     }
+    validate_language_and_view(project)?;
     Ok(())
 }
 
@@ -519,6 +538,7 @@ fn read_document(app: &tauri::AppHandle, path: PathBuf) -> Result<OpenedDocument
         if value["format"] != "codeflow" || value["version"] != 1 {
             return Err("Invalid CodeFlow project.".into());
         }
+        validate_language_and_view(value.as_object().ok_or("Invalid CodeFlow project.")?)?;
     }
     let name = path
         .file_name()
@@ -554,8 +574,8 @@ pub async fn open_document(app: tauri::AppHandle) -> Result<Option<OpenedDocumen
             .dialog()
             .file()
             .add_filter(
-                "CodeFlow or C++",
-                &["codeflow", "cpp", "cc", "cxx", "h", "hpp", "hxx"],
+                "CodeFlow, C++, or C#",
+                &["codeflow", "cpp", "cc", "cxx", "h", "hpp", "hxx", "cs"],
             )
             .blocking_pick_file()
         else {
@@ -613,6 +633,7 @@ pub async fn save_project_document(
     if value["format"] != "codeflow" || value["version"] != 1 {
         return Err("Invalid CodeFlow project.".into());
     }
+    validate_language_and_view(value.as_object().ok_or("Invalid CodeFlow project.")?)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DocumentState>();
         let path = if let Some(token) = project_token {
@@ -850,6 +871,23 @@ mod tests {
                 }
             }]
         });
+        assert!(validate_recovery_project(&value.to_string()).is_err());
+    }
+
+    #[test]
+    fn project_language_and_view_are_optional_bounded_enums() {
+        let legacy = project("source");
+        assert!(validate_recovery_project(&legacy).is_ok());
+
+        let mut value: serde_json::Value = serde_json::from_str(&legacy).unwrap();
+        value["language"] = serde_json::json!("csharp");
+        value["view"] = serde_json::json!("file");
+        assert!(validate_recovery_project(&value.to_string()).is_ok());
+
+        value["language"] = serde_json::json!("python");
+        assert!(validate_recovery_project(&value.to_string()).is_err());
+        value["language"] = serde_json::json!("cpp");
+        value["view"] = serde_json::json!("diagram");
         assert!(validate_recovery_project(&value.to_string()).is_err());
     }
 }

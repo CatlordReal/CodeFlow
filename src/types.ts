@@ -1,3 +1,5 @@
+export type SourceLanguage = 'cpp' | 'csharp';
+export type ChartView = 'function' | 'file' | 'program';
 export type FunctionInfo = {
   id: string;
   name: string;
