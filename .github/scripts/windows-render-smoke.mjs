@@ -629,7 +629,7 @@ async function waitForNativeRecovery(client, end, expected) {
 async function waitForRecoveryRestore(client, end, expected) {
   let state;
   while (Date.now() < end) {
-    state = await evaluate(client, `window.__TAURI_INTERNALS__.invoke('read_recovery').then(opened => {
+    state = await evaluate(client, `Promise.resolve(window.__TAURI_INTERNALS__?.invoke?.('read_recovery')).then(opened => {
       let project = null;
       try { project = opened ? JSON.parse(opened.contents) : null; } catch {}
       return {
