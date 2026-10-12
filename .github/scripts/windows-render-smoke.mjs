@@ -42,7 +42,7 @@ try {
   await chooseTheme(client, "Latte");
   await waitForValue(client, deadline, `document.documentElement.dataset.theme === 'catppuccin-latte' && document.documentElement.style.colorScheme === 'light'`, "Latte theme");
   await setRange(client, 'input[aria-label="Transparency"]', 35);
-  await waitForValue(client, deadline, `document.documentElement.style.getPropertyValue('--surface-opacity') === '65%' && document.querySelector('.transparency-control output')?.textContent === '35%'`, "window transparency");
+  await waitForValue(client, deadline, `document.documentElement.style.getPropertyValue('--surface-opacity') === '65%' && document.querySelector('.app-toolbar__transparency output')?.textContent === '35%'`, "window transparency");
   const wideBytes = await capture(client, path.join(options.output, "windows-smoke-wide.png"));
 
   await clickComments(client);
