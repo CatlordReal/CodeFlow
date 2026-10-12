@@ -16,7 +16,7 @@
 .program-group__spinner { width:18px; height:18px; border:2px solid var(--line-strong); border-top-color:var(--accent); border-radius:50%; animation:program-board-spin .8s linear infinite; }
 @keyframes program-board-spin { to { transform:rotate(360deg); } }
 .program-board .react-flow__node-flowNode { cursor:pointer; }
-.program-board .react-flow__edge, .program-board .react-flow__edge path { pointer-events:none; }
+.program-board .react-flow__edge, .program-board .react-flow__edge * { pointer-events:none; }
 .program-board .react-flow__edge path[stroke-dasharray] { opacity:.9; }
 .program-board__status { position:absolute; z-index:8; top:10px; left:10px; display:flex; gap:10px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:color-mix(in srgb,var(--panel) 88%,transparent); backdrop-filter:blur(12px); font-size:9px; pointer-events:none; }
 .program-board__empty { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; color:var(--muted); }
