@@ -47,6 +47,22 @@ jobs:
             throw "Expected one installed codeflow.exe, found $($executables.Count)."
           }
           "CODEFLOW_EXE=$($executables[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Verify installed custom icon
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib, os, struct
+          executable = Path(os.environ['CODEFLOW_EXE'])
+          source = Path('src-tauri/icon.svg').read_bytes()
+          assert (executable.parent / 'icon.svg').read_bytes() == source, 'Custom icon source missing from installation'
+          icon = Path('src-tauri/icons/icon.ico').read_bytes()
+          count = struct.unpack_from('<H', icon, 4)[0]
+          frames = [struct.unpack_from('<II', icon, 6 + index * 16 + 8) for index in range(count)]
+          length, offset = max(frames)
+          payload = icon[offset:offset + length]
+          assert payload.startswith(b'\x89PNG\r\n\x1a\n'), 'Expected PNG frame in source ICO'
+          assert payload in executable.read_bytes(), 'Custom icon image missing from installed PE resources'
+          print('PASS: custom icon image embedded in EXE; matching SVG source installed')
       - name: Verify installed Windows runtime
         shell: pwsh
         timeout-minutes: 4

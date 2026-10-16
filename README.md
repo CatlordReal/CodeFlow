@@ -26,11 +26,11 @@ Choose **C++** or **C#** beside the app name, open a source file or paste code, 
 - Conventional flowchart symbols with exact parser-derived decisions and paths.
 - Loop depth controls for overview, nested levels, or full expansion.
 - Individual loop expansion and collapse, where control flow permits it.
-- Exact classic-loop conditions on branch labels, range-loop completion labels, and distinct Loop badges.
+- Editable loop-arrow labels, exact classic-loop conditions, range-loop completion labels, and distinct Loop badges. While loops default to Looping / Ended.
 - Code and natural-language label modes, source comments, annotations, box hiding, removal flags, and highlighting for unchanged natural-language labels.
 - SVG and PNG export using the palette active at export time.
 
-Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects visible paths and retains relevant decision text. Flags mark candidates without deleting them.
+Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects visible paths and retains relevant decision text. **Flag for removal** and **Flag for update** mark separate review states without changing code or deleting boxes. Hide/show preserves the current viewport. Select a loop header to edit its **Looping arrow** and **Exit arrow** text. Clearing either field restores its default.
 
 ## Projects and recovery
 
@@ -56,7 +56,7 @@ C# uses its own Tree-sitter grammar and needs no .NET installation. It handles m
 
 ## Menus
 
-The top bar groups **Project**, **Appearance**, **Export**, and **More** actions, with **Save project** kept directly accessible. Chart **Tools** contains AI captions, hidden-box controls, label highlighting, history, and reset actions. View, label mode, loop depth, and comments remain visible.
+The top bar groups **Project**, **Appearance**, and **Export** actions, with **Analyze again**, **Check updates**, and **Save project** directly accessible. Chart **Tools** contains AI captions, hidden-box controls, label highlighting, history, and reset actions. View, label mode, loop depth, and comments remain visible.
 
 ## File map
 

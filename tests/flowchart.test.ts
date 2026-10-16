@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { analyzeLoops, overviewGraph, simplifyGraph } from "../src/simplify";
-import { layoutGraph, NODE_WIDTH, nodeHeight, type RoutePoint } from "../src/layout";
+import { layoutGraph, NODE_WIDTH, nodeHeight, routeLabelBounds, routeLabelPosition, type RouteBounds, type RoutePoint } from "../src/layout";
 import { createSvgDocument } from "../src/exportSvg";
 import type { FlowGraph, FlowNode } from "../src/types";
+import { functionViewportFitKey } from "../src/viewport";
+
+const viewportState = { source: "int work() {}", functionId: "work", loopDepth: 1, loopOverrides: {}, hiddenNodeIds: [], showHiddenNodes: false };
+const viewportFit = functionViewportFitKey(viewportState);
+assert.equal(functionViewportFitKey({ ...viewportState, hiddenNodeIds: ["step"] }), viewportFit, "hiding a box must preserve viewport");
+assert.equal(functionViewportFitKey({ ...viewportState, showHiddenNodes: true }), viewportFit, "showing hidden boxes must preserve viewport");
+assert.notEqual(functionViewportFitKey({ ...viewportState, functionId: "other" }), viewportFit, "function switch must fit viewport");
+assert.notEqual(functionViewportFitKey({ ...viewportState, loopDepth: 2 }), viewportFit, "global depth change must fit viewport");
+assert.notEqual(functionViewportFitKey({ ...viewportState, loopOverrides: { loop: true } }), viewportFit, "loop override must fit viewport");
 
 const node = (id: string, kind: string, label = id, start = Number(id.replace(/\D/g, "")) * 10): FlowNode => ({ id, kind, label, line: 1, start_byte: start, end_byte: start + 5, comments: [] });
 const graph = (nodes: FlowNode[], links: [string, string, string?][]): FlowGraph => ({ nodes, edges: links.map(([source, target, label], index) => ({ id: `e${index}`, source, target, label: label ?? "" })), diagnostics: [] });
@@ -110,6 +119,16 @@ function segmentHitsBox(a: RoutePoint, b: RoutePoint, x: number, y: number, widt
   throw new Error("Route must be orthogonal");
 }
 
+function boundsOverlap(left: RouteBounds, right: RouteBounds): boolean {
+  return left.x < right.x + right.width && left.x + left.width > right.x && left.y < right.y + right.height && left.y + left.height > right.y;
+}
+
+const loopBounds = { x: 0, y: 0, width: NODE_WIDTH, height: 100 };
+const longBranch = "not (every pending request has completed successfully)";
+const outsideLoop = routeLabelPosition([{ x: NODE_WIDTH, y: 50 }, { x: NODE_WIDTH + 80, y: 50 }], longBranch, [loopBounds]);
+assert(!boundsOverlap(routeLabelBounds(outsideLoop, longBranch), loopBounds), "long branch label must clear loop box");
+assert(outsideLoop.x > NODE_WIDTH, "horizontal branch label must stay beside its outgoing route");
+
 async function verifyLayout(simple: FlowGraph, name: string) {
   const canvas = await layoutGraph(simple);
   assert.equal(canvas.nodes.length, simple.nodes.length);
@@ -141,6 +160,14 @@ async function verifyLayout(simple: FlowGraph, name: string) {
 await verifyLayout(simple, "branch");
 await verifyLayout(jump, "loop jumps");
 await verifyLayout(overview, "loop overview");
+const displayedLoopLabels = new Map(overview.edges.map((edge) => [edge.id, edge.label === "Yes" ? "every pending request has completed successfully" : edge.label === "No" ? longBranch : edge.label]));
+const displayedLoop = await layoutGraph(overview, displayedLoopLabels);
+for (const edge of displayedLoop.edges) {
+  const label = displayedLoopLabels.get(edge.id) ?? "";
+  if (!label) continue;
+  const bounds = routeLabelBounds(edge.data!.labelPosition, label);
+  for (const item of displayedLoop.nodes) assert(!boundsOverlap(bounds, { ...item.position, width: NODE_WIDTH, height: nodeHeight(item.data.flow) }), `${edge.id}: displayed label must clear ${item.id}`);
+}
 const fixture = new URL("../.local/sample-graphs.json", import.meta.url);
 // esbuild runs this test from .local, where the same filename stays local and private.
 const fixturePath = existsSync(fixture) ? fixture : new URL("./sample-graphs.json", import.meta.url);

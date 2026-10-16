@@ -107,6 +107,8 @@ export default function AppToolbar({
       </div>
 
       <div className="toolbar app-toolbar__actions" ref={toolbarRef} onKeyDown={handleKeyDown}>
+        <button className="button app-toolbar__quick" onClick={() => run(onAnalyze)} title="Analyze again (Ctrl/⌘ Enter)" aria-label="Analyze again"><Icon name="refresh" /><span>Analyze again</span></button>
+        <button className="button app-toolbar__quick" disabled={updateBusy} onClick={() => run(onCheckUpdates)} title="Check for updates" aria-label="Check for updates"><Icon name="update" /><span>Check updates</span></button>
         <details className="app-toolbar__group" onToggle={handleToggle}>
           <summary className="button">Project <Icon name="chevron" /></summary>
           <div className="app-toolbar__menu app-toolbar__menu--project" role="group" aria-label="Project actions">
@@ -142,7 +144,7 @@ export default function AppToolbar({
           <Icon name="save" /> <span>Save project</span>
         </button>
 
-        <details className="app-toolbar__group" onToggle={handleToggle}>
+        <details className="app-toolbar__group app-toolbar__group--end" onToggle={handleToggle}>
           <summary className="button button--primary">Export <Icon name="chevron" /></summary>
           <div className="app-toolbar__menu" role="group" aria-label="Export actions">
             <button disabled={!exportReady} onClick={() => run(onExportSvg)}><Icon name="export" /> Export SVG</button>
@@ -150,13 +152,6 @@ export default function AppToolbar({
           </div>
         </details>
 
-        <details className="app-toolbar__group app-toolbar__group--end" onToggle={handleToggle}>
-          <summary className="button">More <Icon name="chevron" /></summary>
-          <div className="app-toolbar__menu" role="group" aria-label="More actions">
-            <button onClick={() => run(onAnalyze)} title="Analyze (Ctrl/⌘ Enter)" aria-label="Analyze again"><Icon name="refresh" /> Analyze again</button>
-            <button disabled={updateBusy} onClick={() => run(onCheckUpdates)} title="Check for updates" aria-label="Check for updates"><Icon name="update" /> Check for updates</button>
-          </div>
-        </details>
       </div>
     </header>
   );

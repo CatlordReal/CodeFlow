@@ -34,6 +34,20 @@ try {
 
   await setViewport(client, 1440, 900);
   const initial = await waitForGraph(client, deadline, { comments: false });
+  const shellLayout = await evaluate(client, `(() => {
+    const analyze = document.querySelector('.app-toolbar__actions > button[aria-label="Analyze again"]');
+    const update = document.querySelector('.app-toolbar__actions > button[aria-label="Check for updates"]');
+    const source = document.querySelector('.source-panel')?.getBoundingClientRect();
+    const chart = document.querySelector('.chart-panel')?.getBoundingClientRect();
+    return {
+      analyze: Boolean(analyze && !analyze.disabled && analyze.getClientRects().length),
+      update: Boolean(update && !update.disabled && update.getClientRects().length),
+      paneGap: source && chart ? Math.abs(source.right - chart.left) : null,
+    };
+  })()`);
+  if (!shellLayout.analyze || !shellLayout.update || shellLayout.paneGap === null || shellLayout.paneGap > 0.5) {
+    throw new Error(`Direct toolbar controls or pane adjacency failed: ${JSON.stringify(shellLayout)}.`);
+  }
   await chooseTheme(client, "Wallpaper");
   const wallpaperFirst = await waitForWallpaperPalette(client, deadline);
   await writeFile(path.join(options.output, "wallpaper-change.request"), "change\n");
@@ -87,17 +101,51 @@ int helper(int value) { return value * 2; }`;
   })()`);
   if (!selected) throw new Error("Nested loop box was not clickable.");
   await waitForValue(client, deadline, `Boolean(document.querySelector('textarea[aria-label="Box label"]'))`, "box editor");
+  const loopContinueLabel = "Repeat inner loop";
+  const loopExitLabel = "Inner loop done";
   await clickButton(client, ".node-editor", "Expand this loop");
   const individuallyExpanded = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 0 });
   if (individuallyExpanded.nodeCount <= depthOne.nodeCount) throw new Error("Individual loop expansion did not reveal its body.");
+  await waitForValue(client, deadline, `Boolean(document.querySelector('input[aria-label="Looping arrow label"]') && document.querySelector('input[aria-label="Exit arrow label"]'))`, "loop arrow editors");
+  await setInput(client, 'input[aria-label="Looping arrow label"]', loopContinueLabel);
+  await setInput(client, 'input[aria-label="Exit arrow label"]', loopExitLabel);
+  await clickCheckboxLabel(client, ".node-editor", "Flag for removal");
+  await clickCheckboxLabel(client, ".node-editor", "Flag for update");
+  await waitForValue(client, deadline, `(() => {
+    const box = document.querySelector('.flow-symbol--decision[data-loop][data-flagged-for-update="true"]');
+    const checks = [...document.querySelectorAll('.node-editor .flag-box input[type="checkbox"]')];
+    return box?.dataset.flagged === 'true' && box?.dataset.flaggedForUpdate === 'true' &&
+      checks.length === 2 && checks.every(input => input.checked);
+  })()`, "independent checked review flags");
+  await waitForValue(client, deadline, `(() => {
+    const labels = [...document.querySelectorAll('.flow-edge-label')].map(node => node.textContent.trim());
+    return labels.includes(${JSON.stringify(loopContinueLabel)}) && labels.includes(${JSON.stringify(loopExitLabel)}) &&
+      Boolean(document.querySelector('.flow-symbol--decision[data-loop][data-flagged-for-update="true"]'));
+  })()`, "custom loop arrows and update flag");
+  await setViewport(client, 900, 900);
+  await delay(350);
+  const loopEditsCompactBytes = await capture(client, path.join(options.output, "windows-loop-edits-compact.png"));
+  await setViewport(client, 1440, 900);
+  await clickButton(client, ".node-editor", "Collapse this loop");
+  await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
+  await clickButton(client, ".node-editor", "Expand this loop");
+  await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 0 });
+  await waitForValue(client, deadline, `(() => {
+    const labels = [...document.querySelectorAll('.flow-edge-label')].map(node => node.textContent.trim());
+    return labels.includes(${JSON.stringify(loopContinueLabel)}) && labels.includes(${JSON.stringify(loopExitLabel)});
+  })()`, "custom loop arrows after collapse and expand");
   await clickButton(client, ".node-editor", "Collapse this loop");
   await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
   await setTextarea(client, 'textarea[aria-label="Box label"]', boxLabel);
   await setTextarea(client, 'textarea[aria-label="Box annotation"]', annotation);
+  await clickCheckboxLabel(client, ".node-editor", "Flag for removal");
+  await clickCheckboxLabel(client, ".node-editor", "Flag for update");
   await waitForValue(client, deadline, `(() => {
     const box = document.querySelector('.flow-symbol--subprocess');
-    return box?.querySelector('.flow-symbol__label')?.textContent === ${JSON.stringify(boxLabel)} && box?.querySelector('.flow-symbol__annotation')?.textContent === ${JSON.stringify(annotation)};
-  })()`, "edited label and annotation");
+    return box?.querySelector('.flow-symbol__label')?.textContent === ${JSON.stringify(boxLabel)} &&
+      box?.querySelector('.flow-symbol__annotation')?.textContent === ${JSON.stringify(annotation)} &&
+      box.dataset.flagged === 'true' && box.dataset.flaggedForUpdate === 'true';
+  })()`, "edited label, annotation, and collapsed-box review flags");
   await selectValue(client, 'select[aria-label="Label mode"]', 'code');
   await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent.includes('for') && document.querySelector('.flow-symbol__annotation')?.textContent === ${JSON.stringify(annotation)}`, "separate code label with retained annotation");
   await selectValue(client, 'select[aria-label="Label mode"]', 'natural');
@@ -106,25 +154,48 @@ int helper(int value) { return value * 2; }`;
   const commentRemovedSource = loopSource.replace("    // Add each number.\n", "");
   await setTextarea(client, 'textarea[aria-label="C++ source code"]', commentRemovedSource);
   await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
-  await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === ${JSON.stringify(boxLabel)}`, "edited label after comment removal");
+  await waitForValue(client, deadline, `(() => {
+    const box = document.querySelector('.flow-symbol--subprocess');
+    return box?.querySelector('.flow-symbol__label')?.textContent === ${JSON.stringify(boxLabel)} &&
+      box.dataset.flagged === 'true' && box.dataset.flaggedForUpdate === 'true';
+  })()`, "edited label and review flags after comment removal");
 
   await evaluate(client, `document.querySelector('.flow-symbol--subprocess')?.closest('.react-flow__node')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
   await waitForValue(client, deadline, `Boolean(document.querySelector('.node-editor'))`, "box editor after source edit");
+  await clickButton(client, ".node-editor", "Expand this loop");
+  await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 0 });
+  await waitForValue(client, deadline, `(() => {
+    const editor = document.querySelector('.node-editor');
+    const labels = [...document.querySelectorAll('.flow-edge-label')].map(node => node.textContent.trim());
+    return editor?.querySelector('input[aria-label="Looping arrow label"]')?.value === ${JSON.stringify(loopContinueLabel)} &&
+      editor.querySelector('input[aria-label="Exit arrow label"]')?.value === ${JSON.stringify(loopExitLabel)} &&
+      labels.includes(${JSON.stringify(loopContinueLabel)}) && labels.includes(${JSON.stringify(loopExitLabel)});
+  })()`, "custom loop arrows after source edit");
+  await clickButton(client, ".node-editor", "Collapse this loop");
+  await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
 
-  await clickCheckboxLabel(client, ".node-editor", "Flag for removal");
-  await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess')?.dataset.flagged === 'true' && Boolean(document.querySelector('.flow-symbol__flag-marker'))`, "flagged box");
   await clickButton(client, ".chart-options", "Highlight unmodified labels");
   await waitForValue(client, deadline, `document.querySelectorAll('.flow-symbol[data-unmodified="true"]').length > 0`, "unmodified label highlights");
 
+  await delay(350);
+  const viewportBeforeHide = await evaluate(client, `document.querySelector('.chart-canvas .react-flow__viewport')?.style.transform ?? ''`);
+  if (!viewportBeforeHide) throw new Error("Function viewport transform was unavailable before hiding a box.");
   await clickButton(client, ".node-editor", "Hide box");
   const hidden = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 0 });
   if (hidden.nodeCount >= depthOne.nodeCount) throw new Error("Hide box did not remove the selected loop from the chart.");
+  await delay(350);
+  const viewportAfterHide = await evaluate(client, `document.querySelector('.chart-canvas .react-flow__viewport')?.style.transform ?? ''`);
+  if (viewportAfterHide !== viewportBeforeHide) throw new Error(`Hide box changed viewport: ${viewportBeforeHide} -> ${viewportAfterHide}.`);
   await clickCheckboxLabel(client, ".chart-options", "Show hidden boxes");
-  await waitForValue(client, deadline, `document.querySelector('.flow-symbol[data-hidden="true"]')?.classList.contains('flow-symbol--subprocess') === true`, "shown hidden box");
+  await waitForValue(client, deadline, `(() => {
+    const box = document.querySelector('.flow-symbol[data-hidden="true"]');
+    return box?.classList.contains('flow-symbol--subprocess') === true &&
+      box.dataset.flagged === 'true' && box.dataset.flaggedForUpdate === 'true';
+  })()`, "shown hidden box with retained review flags");
   await evaluate(client, `document.querySelector('.flow-symbol[data-hidden="true"]')?.closest('.react-flow__node')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
   await waitForValue(client, deadline, `Boolean(document.querySelector('.node-editor'))`, "hidden box editor");
   await clickButton(client, ".node-editor", "Reset box");
-  await waitForValue(client, deadline, `!document.querySelector('.flow-symbol[data-flagged="true"]') && document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent !== ${JSON.stringify(boxLabel)}`, "reset box state");
+  await waitForValue(client, deadline, `!document.querySelector('.flow-symbol[data-flagged="true"], .flow-symbol[data-flagged-for-update="true"]') && document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent !== ${JSON.stringify(boxLabel)}`, "reset box state");
 
   const historyBefore = await historyRevisionCount(client);
   await clickButton(client, ".chart-options", "Alternate");
@@ -133,7 +204,7 @@ int helper(int value) { return value * 2; }`;
   await clickButton(client, ".history-panel", "Close");
   await clickButton(client, ".chart-options", "Undo");
   await clickButton(client, ".chart-options", "Reset chart");
-  await waitForValue(client, deadline, `document.querySelector('select[aria-label="Loop expansion depth"]')?.value === '0' && !document.querySelector('.flow-symbol[data-hidden="true"]') && !document.querySelector('.flow-symbol[data-flagged="true"]')`, "reset chart defaults");
+  await waitForValue(client, deadline, `document.querySelector('select[aria-label="Loop expansion depth"]')?.value === '0' && !document.querySelector('.flow-symbol[data-hidden="true"]') && !document.querySelector('.flow-symbol[data-flagged="true"], .flow-symbol[data-flagged-for-update="true"]')`, "reset chart defaults");
 
   await selectValue(client, 'select[aria-label="Chart view"]', 'file');
   await waitForValue(client, deadline, `document.querySelectorAll('.function-board-card').length === 2 && document.querySelectorAll('.function-board .react-flow__edge').length >= 1`, "file map call references");
@@ -271,12 +342,13 @@ public class Demo {
 
   const result = {
     target: { title: target.title, url: target.url },
+    shell: shellLayout,
     wide: { width: 1440, height: 900, bytes: wideBytes, nodes: initial.nodeCount, theme: "catppuccin-latte" },
     compact: { width: 900, height: 900, bytes: compactBytes, nodes: compact.nodeCount, theme: "catppuccin-mocha" },
     comments: { initial: initial.commentCount, enabled: commentsOn.commentCount, disabled: commentsOff.commentCount },
     labelModes: ["code", "natural"],
     loopExpansion: { overview: overview.nodeCount, depthOne: depthOne.nodeCount, individual: individuallyExpanded.nodeCount },
-    edits: { naturalLabel: boxLabel, annotation, retainedAcrossModeChange: true, retainedAfterCommentRemoval: true, flagHighlightHideReset: true },
+    edits: { naturalLabel: boxLabel, annotation, retainedAcrossModeChange: true, retainedAfterCommentRemoval: true, flagHighlightHideReset: true, updateFlagPersisted: true, loopContinueLabel, loopExitLabel, loopEditsCompactBytes, hideViewportStable: true },
     history: { alternate: true, undo: true, reset: true },
     fileMap: { cards: 2, callReferences: true },
     wholeProgram: { cppGroups: cppProgram.groups, cppCalls: cppProgram.calls, wideBytes: cppProgramBytes, compactBytes: cppProgramCompactBytes },
@@ -449,12 +521,8 @@ async function waitForWallpaperPalette(client, end, previousAccent = null) {
 
 async function checkUpdater(client, end) {
   const clicked = await evaluate(client, `(() => {
-    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
-      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('More'));
-    if (!menu) return false;
-    if (!menu.open) menu.querySelector(':scope > summary')?.click();
-    const button = menu.querySelector('button[aria-label="Check for updates"]');
-    if (!menu.open || !button || button.disabled || button.getClientRects().length === 0) return false;
+    const button = document.querySelector('.app-toolbar__actions > button[aria-label="Check for updates"]');
+    if (!button || button.disabled || button.getClientRects().length === 0) return false;
     button.click();
     return true;
   })()`);

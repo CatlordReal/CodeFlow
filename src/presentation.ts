@@ -2,7 +2,7 @@ import type {ChartHistory} from './history';
 import type { FlowGraph, FlowNode, SourceLanguage, ChartView } from './types';
 
 export type ChartMode = 'code' | 'natural';
-export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean };
+export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean; flaggedForUpdate?: boolean; loopContinueLabel?: string; loopExitLabel?: string };
 export type ChartEdits = Record<string, Record<string, NodeEdit>>;
 export type CaptionSets = Record<string, Record<string, string>>;
 
@@ -28,6 +28,9 @@ export function presentGraph(graph: FlowGraph, mode: ChartMode, comments: boolea
     label: edits[node.id]?.[mode] ?? (mode === 'natural' ? captions[node.id] ?? naturalLabel(node) : node.label),
     annotation: edits[node.id]?.annotation ?? '',
     flagged: edits[node.id]?.flagged ?? false,
+    flaggedForUpdate: edits[node.id]?.flaggedForUpdate ?? false,
+    loopContinueLabel: edits[node.id]?.loopContinueLabel,
+    loopExitLabel: edits[node.id]?.loopExitLabel,
     comments: comments ? node.comments : [],
   })) };
 }
@@ -38,15 +41,18 @@ export function presentLoopEdgeLabels(graph: FlowGraph): FlowGraph {
     .filter(node => node.kind === 'loop')
     .map(node => [node.id, {
       condition: node.loop_condition?.trim() || null,
+      forLoop: /^(?:for|foreach)\s*\(/s.test(node.original_label ?? node.label),
       range: /^(?:for\s*\([^;]*:[^;]*\)|foreach\s*\(.*\bin\b.*\))$/s.test(node.original_label ?? node.label),
+      continueLabel: node.loopContinueLabel,
+      exitLabel: node.loopExitLabel,
     }]));
   return {
     ...graph,
     edges: graph.edges.map(edge => {
       const loop = loops.get(edge.source);
       if (!loop) return edge;
-      if (edge.label === 'Yes') return { ...edge, label: loop.condition ?? (loop.range ? 'Next item' : 'Always') };
-      if (edge.label === 'No') return { ...edge, label: loop.condition ? `not (${loop.condition})` : (loop.range ? 'Finished' : 'Never') };
+      if (edge.label === 'Yes') return { ...edge, label: loop.continueLabel ?? (loop.forLoop ? loop.condition ?? (loop.range ? 'Next item' : 'Always') : 'Looping') };
+      if (edge.label === 'No') return { ...edge, label: loop.exitLabel ?? (loop.forLoop ? loop.condition ? `not (${loop.condition})` : (loop.range ? 'Finished' : 'Never') : 'Ended') };
       return edge;
     }),
   };
@@ -79,7 +85,7 @@ export function readProject(text: string): Project {
         } else {
           if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid node edit.');
           for (const [key, label] of Object.entries(item)) {
-            if (key==='flagged' ? typeof label !== 'boolean' : (!['code','natural','annotation'].includes(key) || typeof label !== 'string' || label.length > 2000)) throw new Error('Invalid node text.');
+            if (key==='flagged' || key==='flaggedForUpdate' ? typeof label !== 'boolean' : (!['code','natural','annotation','loopContinueLabel','loopExitLabel'].includes(key) || typeof label !== 'string' || label.length > 2000)) throw new Error('Invalid node text.');
           }
         }
       }

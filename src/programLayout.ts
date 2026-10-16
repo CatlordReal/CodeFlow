@@ -21,6 +21,19 @@ export function namespaceProgramDiagram(groupId: string, nodes: CanvasNode[], ed
   };
 }
 
+export function positionProgramEdges(groupId: string, edges: CanvasEdge[], group: ProgramPosition, content: ProgramPosition): CanvasEdge[] {
+  return namespaceProgramDiagram(groupId, [], edges).edges.map((edge) => ({
+    ...edge,
+    type: "flowEdge",
+    zIndex: 1,
+    data: edge.data && {
+      ...edge.data,
+      points: edge.data.points.map((point) => ({ x: point.x + group.x + content.x, y: point.y + group.y + content.y })),
+      labelPosition: { x: edge.data.labelPosition.x + group.x + content.x, y: edge.data.labelPosition.y + group.y + content.y },
+    },
+  }));
+}
+
 /** Main first, then shelf rows sized from actual diagrams. Explicit positions remain untouched. */
 export function arrangeProgramGroups(groups: ProgramGroupLayout[], gap = 72, maxRowWidth = 1800, calls: ProgramCallEdge[] = []): Record<string, ProgramPosition> {
   const byId = new Map(groups.map((group) => [group.id, group]));
@@ -94,10 +107,21 @@ const escapeXml = (value: string): string => value.replace(/[&<>"']/g, (characte
 export function composeProgramSvg(groups: ProgramDiagram[], calls: ProgramCallEdge[], positions: Record<string, ProgramPosition>, palette: SvgPalette, renderDiagram: (nodes: CanvasNode[], edges: Edge[], palette: SvgPalette) => string): string {
   if (!groups.length || groups.some((group) => group.error)) return "";
   const padding = 48;
-  const minX = Math.min(...groups.map((group) => positions[group.id]?.x ?? 0)) - padding;
-  const minY = Math.min(...groups.map((group) => positions[group.id]?.y ?? 0)) - padding;
-  const maxX = Math.max(...groups.map((group) => (positions[group.id]?.x ?? 0) + group.width)) + padding;
-  const maxY = Math.max(...groups.map((group) => (positions[group.id]?.y ?? 0) + group.height)) + padding;
+  const rendered = groups.map((group) => {
+    const position = positions[group.id] ?? { x: 0, y: 0 };
+    const svg = renderDiagram(group.nodes, group.edges, palette);
+    const opening = /^<svg\b([^>]*)>/i.exec(svg), viewBox = opening?.[1].match(/\bviewBox="([^"]+)"/i)?.[1];
+    const inner = opening && viewBox ? svg.slice(opening[0].length).replace(/<\/svg>\s*$/i, "").replace(/(<\/defs>)<rect\b[^>]*\/>/, "$1") : "";
+    const values = viewBox?.trim().split(/\s+/).map(Number);
+    const box = inner && values?.length === 4 && values.every(Number.isFinite) ? values : undefined;
+    return { group, position, viewBox, inner, box };
+  });
+  const horizontalBounds = rendered.flatMap(({ group, position, box }) => [position.x, position.x + group.width, ...(box ? [position.x + 18 + box[0], position.x + 18 + box[0] + box[2]] : [])]);
+  const verticalBounds = rendered.flatMap(({ group, position, box }) => [position.y, position.y + group.height, ...(box ? [position.y + 56 + box[1], position.y + 56 + box[1] + box[3]] : [])]);
+  const minX = Math.min(...horizontalBounds) - padding;
+  const minY = Math.min(...verticalBounds) - padding;
+  const maxX = Math.max(...horizontalBounds) + padding;
+  const maxY = Math.max(...verticalBounds) + padding;
   const byId = new Map(groups.map((group) => [group.id, group]));
   const links = calls.map((call) => {
     const source = byId.get(call.sourceGroup), target = byId.get(call.targetGroup);
@@ -113,13 +137,9 @@ export function composeProgramSvg(groups: ProgramDiagram[], calls: ProgramCallEd
     const bend = Math.max(42, Math.abs(x2 - x1) / 2);
     return `<path d="M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}" class="call" marker-end="url(#program-call-arrow)"/><text x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 8}" text-anchor="middle" class="call-label">${escapeXml(call.label)}</text>`;
   }).join("");
-  const charts = groups.map((group, index) => {
-    const position = positions[group.id] ?? { x: 0, y: 0 };
-    const svg = renderDiagram(group.nodes, group.edges, palette);
-    const opening = /^<svg\b([^>]*)>/i.exec(svg), viewBox = opening?.[1].match(/\bviewBox="([^"]+)"/i)?.[1];
-    const inner = opening && viewBox ? svg.slice(opening[0].length).replace(/<\/svg>\s*$/i, "").replace(/(<\/defs>)<rect\b[^>]*\/>/, "$1").replaceAll('id="arrow"', `id="program-arrow-${index}"`).replaceAll("url(#arrow)", `url(#program-arrow-${index})`) : "";
-    const box = viewBox?.split(/\s+/).map(Number);
-    const chart = inner && box?.length === 4 && box.every(Number.isFinite) ? `<svg x="${position.x + 18 + box[0]}" y="${position.y + 56 + box[1]}" width="${box[2]}" height="${box[3]}" viewBox="${escapeXml(viewBox!)}">${inner}</svg>` : "";
+  const charts = rendered.map(({ group, position, viewBox, inner, box }, index) => {
+    const content = inner.replaceAll('id="arrow"', `id="program-arrow-${index}"`).replaceAll("url(#arrow)", `url(#program-arrow-${index})`);
+    const chart = box ? `<svg x="${position.x + 18 + box[0]}" y="${position.y + 56 + box[1]}" width="${box[2]}" height="${box[3]}" viewBox="${escapeXml(viewBox!)}">${content}</svg>` : "";
     const badge = isProgramEntry(group.info) ? `<text x="${position.x + group.width - 18}" y="${position.y + 29}" text-anchor="end" class="badge">ENTRY</text>` : "";
     return `<g><rect x="${position.x}" y="${position.y}" width="${group.width}" height="${group.height}" rx="14" class="group"/><text x="${position.x + 16}" y="${position.y + 23}" class="title">${escapeXml(group.info.name)}</text><text x="${position.x + 16}" y="${position.y + 41}" class="path">Line ${group.info.line}</text>${badge}${chart}</g>`;
   }).join("");

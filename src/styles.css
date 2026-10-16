@@ -124,7 +124,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, input:focus-
 .update-dialog__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .desktop-update-note { margin-right: auto; color: var(--muted); }
 
-.workspace { min-height: 0; display: grid; grid-template-columns: minmax(340px, .92fr) minmax(440px, 1.55fr); gap: 1px; background: var(--line); }
+.workspace { min-height: 0; display: grid; grid-template-columns: minmax(340px, .92fr) minmax(440px, 1.55fr); gap: 0; background: var(--line); }
 .panel { min-width: 0; min-height: 0; background: var(--panel); }
 .source-panel { display: grid; grid-template-rows: 43px minmax(0, 1fr) 30px; position: relative; transition: box-shadow .15s ease; }
 .source-panel.is-dragging { box-shadow: inset 0 0 0 2px var(--accent); }

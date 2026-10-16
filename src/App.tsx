@@ -30,6 +30,7 @@ import type {ChartState} from './history';
 import { SAMPLE_CPP } from "./sample";
 import type { FlowGraph, FunctionInfo, SourceLanguage, ChartView } from "./types";
 import { createDesktopCloseHandler } from "./close";
+import { functionViewportFitKey } from "./viewport";
 
 const nodeTypes = { flowNode: FlowNodeCard };
 
@@ -276,14 +277,14 @@ export default function App() {
     const presented=presentGraph({...viewGraph,nodes:[node]},mode,includeComments,edits[key],captions[key]).nodes[0];
     return {...presented,unmodified:mode==='natural'&&highlightUnmodified&&edits[key]?.[node.id]?.natural===undefined&&captions[key]?.[node.id]===undefined};
   })}), [viewGraph,mode,includeComments,edits,captions,selectedFunction,loopDepth,highlightUnmodified]);
-  const fitKey=source+'\0'+selectedFunction+'\0'+JSON.stringify([loopDepth,loopOverrides[selectedFunction]??{},hiddenBoxes[selectedFunction]??[],showHiddenBoxes]);
+  const fitKey=functionViewportFitKey({source,functionId:selectedFunction,loopDepth,loopOverrides:loopOverrides[selectedFunction]??{},hiddenNodeIds:hiddenBoxes[selectedFunction]??[],showHiddenNodes:showHiddenBoxes});
   const lastFitKey=useRef('');
   useEffect(() => {
     const request = ++layoutRequest.current;
     if (!displayedGraph.nodes.length) { setCanvasNodes([]); setCanvasEdges([]); return; }
-    void layoutGraph(displayedGraph).then(result => {
+    const labels=new Map(presentLoopEdgeLabels(displayedGraph).edges.map(edge=>[edge.id,edge.label]));
+    void layoutGraph(displayedGraph,labels).then(result => {
       if (request !== layoutRequest.current) return;
-      const labels=new Map(presentLoopEdgeLabels(viewGraph).edges.map(edge=>[edge.id,edge.label]));
       setCanvasNodes(result.nodes); setCanvasEdges(result.edges.map(edge=>({...edge,label:labels.get(edge.id)??edge.label})));
       if(lastFitKey.current!==fitKey){lastFitKey.current=fitKey;window.setTimeout(()=>void flowRef.current?.fitView({padding:0.12,duration:0}),60);}
     }).catch(cause => { if(request===layoutRequest.current) setError(readError(cause)); });
@@ -742,9 +743,14 @@ export default function App() {
           <strong>Loop level {(selectedNode.loop_depth ?? 0)+1}</strong>
           {selectedNode.loop_can_collapse ? <button className="button" onClick={()=>setLoopExpansion(selectedNode.loop_id!,!!selectedNode.loop_collapsed)}>{selectedNode.loop_collapsed?'Expand this loop':'Collapse this loop'}</button> : <span>Terminal paths require this loop to stay expanded.</span>}
           {loopOverrides[selectedFunction]?.[selectedNode.loop_id]!==undefined && <button className="button" onClick={()=>setLoopExpansion(selectedNode.loop_id!,undefined)}>Follow global depth</button>}
+          {selectedNode.kind === 'loop' && <>
+          <label>Looping arrow<input aria-label="Looping arrow label" maxLength={2000} value={selectedNode.loopContinueLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopContinueLabel:event.target.value||undefined}}}));setProjectDirty(true);}}/></label>
+          <label>Exit arrow<input aria-label="Exit arrow label" maxLength={2000} value={selectedNode.loopExitLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopExitLabel:event.target.value||undefined}}}));setProjectDirty(true);}}/></label>
+          </>}
         </div>}
         <label>{mode==='code'?'Code label':'Natural language label'}<textarea aria-label="Box label" maxLength={2000} value={selectedNode.label} onChange={e=>editNode(mode,e.target.value)}/></label>
         <label className="flag-box"><input type="checkbox" checked={selectedNode.flagged??false} onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],flagged:event.target.checked}}}));setProjectDirty(true);}}/> Flag for removal</label>
+        <label className="flag-box"><input type="checkbox" checked={selectedNode.flaggedForUpdate??false} onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],flaggedForUpdate:event.target.checked}}}));setProjectDirty(true);}}/> Flag for update</label>
         <label>Annotation<textarea aria-label="Box annotation" maxLength={2000} value={selectedNode.annotation ?? ''} onChange={e=>editNode('annotation',e.target.value)}/></label>
         <details><summary>Original {language==='cpp'?'C++':'C#'}</summary><pre>{source.slice(byteToStringIndex(source,selectedNode.start_byte),byteToStringIndex(source,selectedNode.end_byte))}</pre></details>
         {!['start','end','return','throw'].includes(selectedNode.kind) && <button className="button" onClick={()=>{change('hiddenBoxes',current=>{const list=current[selectedFunction]??[];return {...current,[selectedFunction]:list.includes(selectedNode.id)?list.filter(id=>id!==selectedNode.id):[...list,selectedNode.id]};},selectedNode.hidden?'Restore box':'Hide box');setProjectDirty(true);setSelectedNodeId('');}}>{selectedNode.hidden?'Restore box':'Hide box'}</button>}

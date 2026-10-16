@@ -173,8 +173,8 @@ export default function FunctionBoard(props: FunctionBoardProps) {
             return {...presented,unmodified:mode==='natural'&&highlightUnmodified&&edits[key]?.[node.id]?.natural===undefined&&captions[key]?.[node.id]===undefined};
           }),
         };
-        const laidOut = await layoutGraph(presented);
         const labels = new Map(presentLoopEdgeLabels(presented).edges.map((edge) => [edge.id, edge.label]));
+        const laidOut = await layoutGraph(presented, labels);
         const edges = laidOut.edges.map((edge) => ({ ...edge, label: labels.get(edge.id) || undefined }));
         return { state: "ready", nodes: laidOut.nodes, edges, diagnostics: presented.diagnostics };
       } catch (cause) {

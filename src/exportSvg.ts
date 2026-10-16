@@ -1,7 +1,7 @@
 import type { Edge } from "@xyflow/react";
 import type { CanvasNode, FlowEdgeData, RoutePoint } from "./layout";
-import { NODE_WIDTH, nodeHeight, routePath } from "./layout";
-import { COMMENT_LINE_HEIGHT, LABEL_LINE_HEIGHT, nodeTextLayout, markerHeight } from "./textLayout";
+import { NODE_WIDTH, nodeHeight, routeLabelBounds, routePath } from "./layout";
+import { COMMENT_LINE_HEIGHT, LABEL_LINE_HEIGHT, nodeTextLayout, nodeContentOffset } from "./textLayout";
 import { flowShape } from "./simplify";
 import type { FlowEdge } from "./types";
 
@@ -75,26 +75,31 @@ export function createSvgDocument(nodes: CanvasNode[], edges: (Edge | FlowEdge)[
     return [sourcePoint, { x: sourcePoint.x, y: middleY }, { x: targetPoint.x, y: middleY }, targetPoint];
   };
   const routes = edges.map((edge) => ({ edge, points: route(edge) }));
-  const allPoints = routes.flatMap(({ points }) => points);
+  const labelPosition = (edge: Edge | FlowEdge, points: RoutePoint[]): RoutePoint => {
+    const data = "data" in edge ? edge.data as FlowEdgeData | undefined : undefined;
+    const next = points[1] ?? points[0];
+    return data?.labelPosition ?? { x: (points[0].x + next.x) / 2 + 18, y: (points[0].y + next.y) / 2 };
+  };
+  const labelBounds = routes.flatMap(({edge,points}) => typeof edge.label === "string" && edge.label && points.length >= 2 ? [routeLabelBounds(labelPosition(edge,points),edge.label)] : []);
+  const allPoints = [...routes.flatMap(({ points }) => points), ...labelBounds.flatMap(bounds => [{x:bounds.x,y:bounds.y},{x:bounds.x+bounds.width,y:bounds.y+bounds.height}])];
   const minX = Math.min(...nodes.map((node) => node.position.x), ...allPoints.map((point) => point.x)) - 48;
   const minY = Math.min(...nodes.map((node) => node.position.y), ...allPoints.map((point) => point.y)) - 48;
   const maxX = Math.max(...nodes.map((node) => node.position.x + NODE_WIDTH), ...allPoints.map((point) => point.x)) + 48;
   const maxY = Math.max(...nodes.map((node) => node.position.y + nodeHeight(node.data.flow)), ...allPoints.map((point) => point.y)) + 48;
   const edgeMarkup = routes.map(({ edge, points }) => {
     if (!points.length) return "";
-    const data = "data" in edge ? edge.data as FlowEdgeData | undefined : undefined;
-    const labelAt = data?.labelPosition ?? { x: (points[0].x + points[1].x) / 2 + 18, y: (points[0].y + points[1].y) / 2 };
+    const labelAt = labelPosition(edge,points);
     const label = typeof edge.label === "string" && edge.label ? `<text x="${labelAt.x}" y="${labelAt.y + 4}" text-anchor="middle" class="edge-label">${esc(edge.label)}</text>` : "";
     return `<path d="${routePath(points)}" class="edge" marker-end="url(#arrow)"/>${label}`;
   }).join("");
   const nodeMarkup = nodes.map((node) => {
     const flow = node.data.flow, height = nodeHeight(flow), shape = flowShape(flow);
     const isLoop = flow.kind === "loop" || flow.loop_collapsed === true;
-    const visual = flow as typeof flow & { flagged?: boolean; unmodified?: boolean };
+    const visual = flow;
     const { x, y } = node.position;
     const { labelLines, commentLines, annotationLines } = nodeTextLayout(flow);
     const contentHeight = labelLines.length * LABEL_LINE_HEIGHT + (commentLines.length ? 10 + commentLines.length * COMMENT_LINE_HEIGHT : 0) + (annotationLines.length ? 10 + annotationLines.length * COMMENT_LINE_HEIGHT : 0);
-    const top = y + (height - contentHeight + markerHeight(flow)) / 2;
+    const top = y + (height - contentHeight) / 2 + nodeContentOffset(flow);
     const text = (lines: string[], start: number, lineHeight: number, className: string) => lines.map((line, index) => `<text x="${x + NODE_WIDTH / 2}" y="${start + index * lineHeight + lineHeight * 0.76}" text-anchor="middle" class="${className}">${esc(line)}</text>`).join("");
     const labelMarkup = text(labelLines, top, LABEL_LINE_HEIGHT, "label");
     const commentsTop = top + labelLines.length * LABEL_LINE_HEIGHT + 10;
@@ -108,9 +113,11 @@ export function createSvgDocument(nodes: CanvasNode[], edges: (Edge | FlowEdge)[
     else outline = `<rect x="${x + 1}" y="${y + 1}" width="${NODE_WIDTH - 2}" height="${height - 2}"/>${shape === "subprocess" ? `<path d="M ${x + 12} ${y + 1} V ${y + height - 1} M ${x + NODE_WIDTH - 12} ${y + 1} V ${y + height - 1}" fill="none" stroke="${esc(palette.subprocessStroke)}" stroke-width="1.6"/>` : ""}`;
     const loopMarker = isLoop ? `<g class="loop-marker"><rect x="${x + NODE_WIDTH / 2 - 22}" y="${y + 7}" width="44" height="16" rx="8"/><text x="${x + NODE_WIDTH / 2}" y="${y + 18}" text-anchor="middle">LOOP</text></g>` : "";
     const flagMarker = visual.flagged ? `<g class="flag-marker"><rect x="${x + NODE_WIDTH - 55}" y="${y + 7}" width="44" height="16" rx="8"/><text x="${x + NODE_WIDTH - 33}" y="${y + 18}" text-anchor="middle">FLAG</text></g>` : "";
-    const stateClass = `${visual.unmodified ? " node-unmodified" : ""}${visual.flagged ? " node-flagged" : ""}`;
-    const stateTitle = `${visual.flagged ? " · Flagged for removal" : ""}${visual.unmodified ? " · Unmodified label" : ""}`;
-    return `<g class="node node-${shape}${isLoop ? " node-loop" : ""}${stateClass}"><title>Line ${flow.line}${stateTitle}</title>${outline}${loopMarker}${flagMarker}${labelMarkup}${commentsMarkup}${annotationMarkup}</g>`;
+    const updateX = x + NODE_WIDTH - 69 - (visual.flagged ? 48 : 0);
+    const updateMarker = visual.flaggedForUpdate ? `<g class="update-marker"><rect x="${updateX}" y="${y + 7}" width="58" height="16" rx="8"/><text x="${updateX + 29}" y="${y + 18}" text-anchor="middle">UPDATE</text></g>` : "";
+    const stateClass = `${visual.unmodified ? " node-unmodified" : ""}${visual.flagged ? " node-flagged" : ""}${visual.flaggedForUpdate ? " node-flagged-for-update" : ""}`;
+    const stateTitle = `${visual.flagged ? " · Flagged for removal" : ""}${visual.flaggedForUpdate ? " · Flagged for update" : ""}${visual.unmodified ? " · Unmodified label" : ""}`;
+    return `<g class="node node-${shape}${isLoop ? " node-loop" : ""}${stateClass}"><title>Line ${flow.line}${stateTitle}</title>${outline}${loopMarker}${updateMarker}${flagMarker}${labelMarkup}${commentsMarkup}${annotationMarkup}</g>`;
   }).join("");
   const labelFont = mode === "natural" ? "500 16px system-ui,sans-serif" : "500 12px ui-monospace,monospace";
   const shapeStyle = ([
@@ -120,7 +127,7 @@ export function createSvgDocument(nodes: CanvasNode[], edges: (Edge | FlowEdge)[
   ] as const).map(([shape, fill, stroke]) => {
     return `.node-${shape}>rect,.node-${shape}>polygon,.node-${shape}>ellipse{fill:${esc(fill)};stroke:${esc(stroke)};stroke-width:1.6}.node-${shape} .loop-marker rect{fill:${esc(fill)};stroke:${esc(stroke)}}`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${maxX - minX}" height="${maxY - minY}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${esc(palette.edge)}"/></marker><style>.edge{fill:none;stroke:${esc(palette.edge)};stroke-width:1.8}.edge-label{font:600 11px system-ui;fill:${esc(palette.text)};paint-order:stroke;stroke:${esc(palette.edgeLabelBackground)};stroke-width:5px}${shapeStyle}.node-loop>rect,.node-loop>polygon,.node-loop>ellipse{stroke-width:2.2}.node-unmodified>rect,.node-unmodified>polygon,.node-unmodified>ellipse{stroke-dasharray:7 4}.loop-marker rect{stroke-width:1}.loop-marker text{font:700 9px system-ui;letter-spacing:.7px;fill:${esc(palette.text)}}.flag-marker rect{fill:${esc(palette.terminatorFill)};stroke:${esc(palette.terminatorStroke)};stroke-width:1}.flag-marker text{font:700 9px system-ui;letter-spacing:.7px;fill:${esc(palette.text)}}.label{font:${labelFont};fill:${esc(palette.text)}}.comment,.annotation{font:11px system-ui;fill:${esc(palette.muted)}}.comment{font-style:italic}</style></defs><rect x="${minX}" y="${minY}" width="${maxX - minX}" height="${maxY - minY}" fill="${esc(palette.background)}"/>${edgeMarkup}${nodeMarkup}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${maxX - minX}" height="${maxY - minY}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="${esc(palette.edge)}"/></marker><style>.edge{fill:none;stroke:${esc(palette.edge)};stroke-width:1.8}.edge-label{font:600 11px system-ui;fill:${esc(palette.text)};paint-order:stroke;stroke:${esc(palette.edgeLabelBackground)};stroke-width:5px}${shapeStyle}.node-loop>rect,.node-loop>polygon,.node-loop>ellipse{stroke-width:2.2}.node-unmodified>rect,.node-unmodified>polygon,.node-unmodified>ellipse{stroke-dasharray:7 4}.loop-marker rect{stroke-width:1}.loop-marker text{font:700 9px system-ui;letter-spacing:.7px;fill:${esc(palette.text)}}.flag-marker rect{fill:${esc(palette.terminatorFill)};stroke:${esc(palette.terminatorStroke)};stroke-width:1}.flag-marker text{font:700 9px system-ui;letter-spacing:.7px;fill:${esc(palette.text)}}.update-marker rect{fill:${esc(palette.ioFill)};stroke:${esc(palette.ioStroke)};stroke-width:1}.update-marker text{font:700 9px system-ui;letter-spacing:.7px;fill:${esc(palette.text)}}.label{font:${labelFont};fill:${esc(palette.text)}}.comment,.annotation{font:11px system-ui;fill:${esc(palette.muted)}}.comment{font-style:italic}</style></defs><rect x="${minX}" y="${minY}" width="${maxX - minX}" height="${maxY - minY}" fill="${esc(palette.background)}"/>${edgeMarkup}${nodeMarkup}</svg>`;
 }
 
 /** Render exported SVG through browser canvas without changing graph geometry. */

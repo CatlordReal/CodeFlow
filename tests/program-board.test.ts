@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { CanvasNode } from "../src/layout";
 import {
-  arrangeProgramGroups, buildProgramCallEdges, composeProgramSvg, namespaceProgramDiagram, programGroupId,
+  arrangeProgramGroups, buildProgramCallEdges, composeProgramSvg, namespaceProgramDiagram, positionProgramEdges, programGroupId,
   type ProgramDiagram,
   isProgramEntry,
 } from "../src/programLayout";
@@ -17,6 +17,10 @@ assert(isProgramEntry(main) && isProgramEntry(info("cs:method:Main", "Main")) &&
 const namespaced = namespaceProgramDiagram(programGroupId(main), [node(flow("n1", "start", "Start"))], [{ id: "e1", source: "n1", target: "n1", type: "flowEdge", data: { points: [], labelPosition: { x: 0, y: 0 }, sourceOrigin: { x: 0, y: 0 }, targetOrigin: { x: 0, y: 0 } } }]);
 assert.equal(namespaced.nodes[0].id, "program:function:main/n1");
 assert.deepEqual([namespaced.edges[0].id, namespaced.edges[0].source, namespaced.edges[0].target], ["program:function:main/e1", "program:function:main/n1", "program:function:main/n1"]);
+const placed = positionProgramEdges("program:function:main", [{ id: "route", source: "n1", target: "n2", type: "flowEdge", label: "Yes", data: { points: [{ x: 10, y: 20 }, { x: 10, y: 80 }], labelPosition: { x: 24, y: 42 }, sourceOrigin: { x: 0, y: 0 }, targetOrigin: { x: 0, y: 100 } } }], { x: 300, y: 400 }, { x: 18, y: 56 })[0];
+assert.deepEqual(placed.data?.points, [{ x: 328, y: 476 }, { x: 328, y: 536 }], "program route follows group and content offsets");
+assert.deepEqual(placed.data?.labelPosition, { x: 342, y: 498 }, "program label follows group drag offset");
+assert.deepEqual([placed.source, placed.target, placed.type, placed.zIndex], ["program:function:main/n1", "program:function:main/n2", "flowEdge", 1], "program internal edge keeps custom route above group");
 
 const groups = [
   { id: "program:b", info: info("b", "helper"), width: 420, height: 260 },
@@ -64,6 +68,9 @@ const svg = composeProgramSvg(escaped, [{ ...calls[0], label: "calls <helper>&" 
 assert(svg.includes("main &lt;entry&gt;&amp;") && svg.includes("calls &lt;helper&gt;&amp;"), "export escapes function and call labels");
 assert(svg.includes("stroke-dasharray:8 6"), "export preserves dashed call links");
 assert(svg.indexOf('class="group"') < svg.indexOf('class="call"'), "export call links layer above group cards like canvas links");
+const overflowing = composeProgramSvg([{ ...diagrams[0], width: 100, height: 100 }], [], { "program:function:main": { x: 40, y: 50 } }, palette, () => '<svg viewBox="-200 -70 700 400"><text>wide label</text></svg>');
+assert(overflowing.includes('viewBox="-190 -12 796 496"'), "program export bounds include nested diagram overflow on every side");
+assert(overflowing.includes('<svg x="-142" y="36" width="700" height="400"'), "nested diagram keeps its translated viewBox extent");
 assert(composeProgramSvg(diagrams, calls, positions, palette, () => '<svg viewBox="0 0 10 10"></svg>').includes("ENTRY"), "export marks main entrypoint");
 assert.equal(composeProgramSvg([{ ...diagrams[0], error: "Unavailable" }], [], positions, palette, () => ""), "", "export remains empty when any group failed");
 

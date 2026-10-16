@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createPngDataUrl, createSvgDocument } from "../src/exportSvg";
 import type { CanvasNode } from "../src/layout";
 import { THEMES } from "../src/themes";
+import { markerHeight, nodeContentHeight, nodeContentOffset } from "../src/textLayout";
 
 const flow = { id: "n1", label: "Run", kind: "process", line: 3, start_byte: 0, end_byte: 3, comments: ["kept"], annotation: "also kept" };
 const nodes = [{ id: "n1", type: "flowNode", position: { x: 10, y: 20 }, data: { flow } }] as CanvasNode[];
@@ -13,6 +14,10 @@ const palette = {
   subprocessFill: "#616161", subprocessStroke: "#626262",
 };
 const svg = createSvgDocument(nodes, [], "code", palette);
+const outsideLabel = createSvgDocument(nodes, [{id:'branch',source:'n1',target:'n1',label:'Edited loop exit',data:{points:[{x:10,y:20},{x:10,y:50}],labelPosition:{x:-350,y:-150}}}], 'code', palette);
+const outsideViewBox = outsideLabel.match(/viewBox="([^"]+)"/)![1].split(' ').map(Number);
+assert(outsideViewBox[0] < -350 && outsideViewBox[1] < -150, 'export includes label extents outside node bounds');
+
 assert(svg.includes('fill="#010203"'), "export uses opaque selected-theme background");
 for (const color of Object.values(palette)) assert(svg.includes(color), `export uses selected palette color ${color}`);
 assert(svg.includes(".node-process>rect") && svg.includes("fill:#111111;stroke:#121212"));
@@ -34,6 +39,21 @@ const reviewFlow = { ...flow, flagged: true, unmodified: true };
 const reviewSvg = createSvgDocument([{ id: "n1", type: "flowNode", position: { x: 0, y: 0 }, data: { flow: reviewFlow } }] as CanvasNode[], [], "code", palette);
 assert(reviewSvg.includes("node-unmodified node-flagged") && reviewSvg.includes("stroke-dasharray:7 4"), "unmodified export uses a dashed outline");
 assert(reviewSvg.includes('class="flag-marker"') && reviewSvg.includes("FLAG") && reviewSvg.includes("Flagged for removal"), "flagged export includes visible and accessible state");
+const updateFlow={...flow,flaggedForUpdate:true};
+const updateSvg=createSvgDocument([{id:'n1',type:'flowNode',position:{x:0,y:0},data:{flow:updateFlow}}] as CanvasNode[],[],'code',palette);
+assert(updateSvg.includes('class="update-marker"')&&updateSvg.includes('UPDATE')&&updateSvg.includes('Flagged for update'),'update flag has a separate visible and accessible export marker');
+assert(!updateSvg.includes('class="flag-marker"')&&!updateSvg.includes('Flagged for removal'),'update flag does not become a removal flag');
+assert(updateSvg.includes('.update-marker rect{fill:#313131;stroke:#323232'),'update marker uses semantic IO colors');
+const bothLoop={...loopFlow,flagged:true,flaggedForUpdate:true};
+const bothSvg=createSvgDocument([{id:'loop',type:'flowNode',position:{x:0,y:0},data:{flow:bothLoop}}] as CanvasNode[],[],'code',palette);
+assert(bothSvg.includes('class="loop-marker"')&&bothSvg.includes('class="update-marker"')&&bothSvg.includes('class="flag-marker"'),'all three markers survive together');
+assert(bothSvg.includes('<rect x="171" y="7" width="58"')&&bothSvg.includes('<rect x="233" y="7" width="44"'),'update/removal badges have distinct horizontal space beside the loop marker');
+assert.equal(markerHeight(updateFlow),22);assert.equal(markerHeight(bothLoop),22,'multiple badges share one reserved row');
+assert.equal(nodeContentHeight(updateFlow),nodeContentHeight(flow)+22);
+assert.equal(nodeContentOffset(loopFlow),6);assert.equal(nodeContentOffset(bothLoop),6,'loop content stays higher even with review flags');
+assert.equal(nodeContentOffset(updateFlow),11);assert.equal(nodeContentOffset(reviewFlow),11);assert.equal(nodeContentOffset(flow),0);
+const expectedLoopTextY=(nodeContentHeight(loopFlow)-70)/2+6+18*.76;
+assert(loopSvg.includes(`y="${expectedLoopTextY}" text-anchor="middle" class="label"`),'SVG loop text uses shared 6px content offset');
 const flowchartCss = await readFile(new URL("../src/flowchart.css", import.meta.url), "utf8");
 assert(!flowchartCss.includes("[data-loop] { --flow-node-border"), "canvas loop outline keeps its shape palette");
 assert(flowchartCss.includes("border: 1px solid var(--flow-node-border)") && flowchartCss.includes("background: var(--flow-node-bg)"), "canvas loop marker matches its shape palette");

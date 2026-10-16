@@ -25,6 +25,9 @@ export type FlowNode = {
   annotation?: string;
   hidden?: boolean;
   flagged?: boolean;
+  flaggedForUpdate?: boolean;
+  loopContinueLabel?: string;
+  loopExitLabel?: string;
   unmodified?: boolean;
   loop_id?: string;
   loop_depth?: number;

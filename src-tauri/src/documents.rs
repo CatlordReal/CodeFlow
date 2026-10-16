@@ -137,8 +137,8 @@ fn validate_records(value: &serde_json::Value, captions: bool) -> Result<(), Str
             }
             for (field, label) in object(item, "Invalid node edit.")? {
                 match field.as_str() {
-                    "flagged" if label.is_boolean() => {}
-                    "code" | "natural" | "annotation"
+                    "flagged" | "flaggedForUpdate" if label.is_boolean() => {}
+                    "code" | "natural" | "annotation" | "loopContinueLabel" | "loopExitLabel"
                         if label.as_str().is_some_and(|text| text_units(text) <= 2000) => {}
                     _ => return Err("Invalid node text.".into()),
                 }
@@ -324,6 +324,16 @@ fn validate_language_and_view(
     Ok(())
 }
 
+fn validate_chart_and_history(
+    project: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    validate_chart_fields(project)?;
+    if let Some(history) = project.get("history") {
+        validate_history(history)?;
+    }
+    Ok(())
+}
+
 fn validate_recovery_project(contents: &str) -> Result<(), String> {
     if contents.len() > PROJECT_LIMIT {
         return Err("Recovery project is too large.".into());
@@ -364,10 +374,7 @@ fn validate_recovery_project(contents: &str) -> Result<(), String> {
     {
         return Err("Invalid label source.".into());
     }
-    validate_chart_fields(project)?;
-    if let Some(history) = project.get("history") {
-        validate_history(history)?;
-    }
+    validate_chart_and_history(project)?;
     validate_language_and_view(project)?;
     Ok(())
 }
@@ -538,7 +545,9 @@ fn read_document(app: &tauri::AppHandle, path: PathBuf) -> Result<OpenedDocument
         if value["format"] != "codeflow" || value["version"] != 1 {
             return Err("Invalid CodeFlow project.".into());
         }
-        validate_language_and_view(value.as_object().ok_or("Invalid CodeFlow project.")?)?;
+        let project = value.as_object().ok_or("Invalid CodeFlow project.")?;
+        validate_chart_and_history(project)?;
+        validate_language_and_view(project)?;
     }
     let name = path
         .file_name()
@@ -633,7 +642,9 @@ pub async fn save_project_document(
     if value["format"] != "codeflow" || value["version"] != 1 {
         return Err("Invalid CodeFlow project.".into());
     }
-    validate_language_and_view(value.as_object().ok_or("Invalid CodeFlow project.")?)?;
+    let project = value.as_object().ok_or("Invalid CodeFlow project.")?;
+    validate_chart_and_history(project)?;
+    validate_language_and_view(project)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DocumentState>();
         let path = if let Some(token) = project_token {
@@ -730,6 +741,86 @@ mod tests {
             "functionPositions":{}
         })
         .to_string()
+    }
+
+    #[test]
+    fn review_flags_and_loop_labels_validate_and_survive_recovery() {
+        let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
+        let edits = serde_json::json!({"function:detail":{"loop":{
+            "flagged":true,"flaggedForUpdate":true,
+            "loopContinueLabel":"Keep working","loopExitLabel":"Finished"
+        }}});
+        value["edits"] = edits.clone();
+        let state = serde_json::json!({
+            "mode":"natural","edits":edits,"captions":{},"loopDepth":0,
+            "loopOverrides":{},"hiddenBoxes":{},"showHiddenBoxes":false,"functionPositions":{}
+        });
+        value["history"] = serde_json::json!({"active":"revision-0","next":1,"revisions":[{
+            "id":"revision-0","parent":null,"name":"Flag loop","state":state
+        }]});
+        assert!(validate_chart_and_history(value.as_object().unwrap()).is_ok());
+        assert!(validate_recovery_project(&value.to_string()).is_ok());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(RECOVERY_NAME);
+        std::fs::write(&path, recovery(&value.to_string(), true, false, true)).unwrap();
+        let (restored, _) = read_recovery_bytes(&path).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&restored.contents).unwrap(),
+            value
+        );
+
+        for field in ["flagged", "flaggedForUpdate"] {
+            for invalid in [
+                serde_json::json!("true"),
+                serde_json::json!(1),
+                serde_json::Value::Null,
+                serde_json::json!({}),
+                serde_json::json!([]),
+            ] {
+                let mut current = value.clone();
+                current["edits"]["function:detail"]["loop"][field] = invalid.clone();
+                assert!(
+                    validate_chart_and_history(current.as_object().unwrap()).is_err(),
+                    "invalid current {field}"
+                );
+                assert!(validate_recovery_project(&current.to_string()).is_err());
+                let mut historical = value.clone();
+                historical["history"]["revisions"][0]["state"]["edits"]["function:detail"]
+                    ["loop"][field] = invalid;
+                assert!(
+                    validate_chart_and_history(historical.as_object().unwrap()).is_err(),
+                    "invalid historical {field}"
+                );
+            }
+        }
+        for field in ["loopContinueLabel", "loopExitLabel"] {
+            for invalid in [
+                serde_json::json!(true),
+                serde_json::json!(1),
+                serde_json::Value::Null,
+                serde_json::json!({}),
+                serde_json::json!([]),
+                serde_json::json!("x".repeat(2001)),
+            ] {
+                let mut current = value.clone();
+                current["edits"]["function:detail"]["loop"][field] = invalid.clone();
+                assert!(
+                    validate_chart_and_history(current.as_object().unwrap()).is_err(),
+                    "invalid current {field}"
+                );
+                let mut historical = value.clone();
+                historical["history"]["revisions"][0]["state"]["edits"]["function:detail"]
+                    ["loop"][field] = invalid;
+                assert!(
+                    validate_chart_and_history(historical.as_object().unwrap()).is_err(),
+                    "invalid historical {field}"
+                );
+            }
+            let mut bounded = value.clone();
+            bounded["edits"]["function:detail"]["loop"][field] =
+                serde_json::json!("x".repeat(2000));
+            assert!(validate_chart_and_history(bounded.as_object().unwrap()).is_ok());
+        }
     }
 
     #[test]

@@ -121,6 +121,24 @@ jobs:
           echo "appimage=$appimage" >> "$GITHUB_OUTPUT"
           echo "appimage_name=$(basename "$appimage")" >> "$GITHUB_OUTPUT"
           echo "signature=$signature" >> "$GITHUB_OUTPUT"
+      - name: Verify packaged custom icon
+        env:
+          APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
+        run: |
+          python3 - <<'PYICON'
+          from pathlib import Path
+          import hashlib, os, subprocess, tempfile
+          root = Path.cwd()
+          digest = lambda path: hashlib.sha256(path.read_bytes()).digest()
+          source = digest(root / 'src-tauri/icon.svg')
+          icons = {digest(path) for path in (root / 'src-tauri/icons').glob('*.png')}
+          with tempfile.TemporaryDirectory(prefix='codeflow-icon-') as directory:
+              subprocess.run([str(Path(os.environ['APPIMAGE']).resolve()), '--appimage-extract'], cwd=directory, check=True, stdout=subprocess.DEVNULL)
+              bundle = Path(directory) / 'squashfs-root'
+              assert any(digest(path) == source for path in bundle.rglob('icon.svg')), 'Custom icon source missing from AppImage'
+              assert any(digest(path) in icons for path in bundle.rglob('*.png')), 'Custom launcher icon missing from AppImage'
+              print('PASS: custom launcher PNG and SVG source embedded in AppImage')
+          PYICON
       # Test tooling belongs to the workflow commit; the app stays on its verified release tag.
       - name: Check out native test harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

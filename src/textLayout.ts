@@ -31,7 +31,12 @@ export function nodeContentHeight(node: FlowNode): number {
   return base + markerHeight(node);
 }
 
-export function markerHeight(node:FlowNode):number {return node.kind==='loop'||node.loop_collapsed||node.flagged?22:0;}
+export function markerHeight(node:FlowNode):number {return node.kind==='loop'||node.loop_collapsed||node.flagged||node.flaggedForUpdate?22:0;}
+
+/** Loop text stays near its visual center; flag-only boxes reserve a full badge row. */
+export function nodeContentOffset(node:FlowNode):number {
+  return node.kind==='loop'||node.loop_collapsed ? 6 : markerHeight(node)/2;
+}
 
 function wrapLine(line: string, columns: number): string[] {
   if (!line) return [""];

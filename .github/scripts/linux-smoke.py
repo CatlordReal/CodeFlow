@@ -172,6 +172,20 @@ def main():
                 driver.start(executable)
                 driver.command("POST", "window/rect", {"width": 1440, "height": 900})
                 driver.wait("document.querySelectorAll('.flow-symbol').length > 2", "initial analysis")
+                shell_layout = driver.script("""
+                    const analyze = document.querySelector('.app-toolbar__actions > button[aria-label="Analyze again"]');
+                    const update = document.querySelector('.app-toolbar__actions > button[aria-label="Check for updates"]');
+                    const source = document.querySelector('.source-panel')?.getBoundingClientRect();
+                    const chart = document.querySelector('.chart-panel')?.getBoundingClientRect();
+                    return {
+                      analyze: Boolean(analyze && !analyze.disabled && analyze.getClientRects().length),
+                      update: Boolean(update && !update.disabled && update.getClientRects().length),
+                      paneGap: source && chart ? Math.abs(source.right - chart.left) : null
+                    };
+                """)
+                assert shell_layout["analyze"] and shell_layout["update"], shell_layout
+                assert shell_layout["paneGap"] is not None and shell_layout["paneGap"] <= .5, shell_layout
+                report["shell"] = shell_layout
                 source = """#include <vector>
 int total(const std::vector<int>& values) {
     int sum = 0;
@@ -269,12 +283,8 @@ int helper(int value) { return value * 2; }
                 assert project["source"] == source and project["fileName"] == "totals.cpp"
                 assert project["history"]["active"] and len(project["history"]["revisions"]) > 1
                 clicked = driver.script("""
-                    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
-                      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('More'));
-                    if (!menu) return false;
-                    if (!menu.open) menu.querySelector(':scope > summary')?.click();
-                    const button = menu.querySelector('button[aria-label="Check for updates"]');
-                    if (!menu.open || !button || button.disabled || button.getClientRects().length === 0) return false;
+                    const button = document.querySelector('.app-toolbar__actions > button[aria-label="Check for updates"]');
+                    if (!button || button.disabled || button.getClientRects().length === 0) return false;
                     button.click(); return true;
                 """)
                 assert clicked, "Check for updates control is unavailable"

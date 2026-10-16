@@ -9,6 +9,15 @@ history=appendRevision(history,{...defaultChartState(),showHiddenBoxes:true},'Al
 assert.equal(history.revisions[2].parent,'revision-0');assert.equal(history.revisions[1].id,codeId);
 const project={format:'codeflow',version:1,source:'int sum(){return 1;}',fileName:'sum.cpp',...history.revisions[2].state,history};
 assert.deepEqual(readProject(JSON.stringify(project)).history,history);
+const flaggedState={...defaultChartState(),edits:{'f:detail':{loop:{flagged:true,flaggedForUpdate:true,loopContinueLabel:'Continue',loopExitLabel:'Ended'}}}};
+const flaggedHistory=appendRevision(initialHistory(defaultChartState()),flaggedState,'Flag and label loop');
+const flaggedProject={...project,...flaggedState,history:flaggedHistory};
+assert.deepEqual(readProject(JSON.stringify(flaggedProject)).history,flaggedHistory,'review metadata survives saved revision history');
+for(const edits of [{loop:{flaggedForUpdate:'yes'}},{loop:{loopExitLabel:42}},{loop:{loopContinueLabel:'x'.repeat(2001)}}]){
+  const invalidHistory=structuredClone(flaggedHistory) as unknown as {revisions:{state:{edits:unknown}}[]};
+  invalidHistory.revisions[1].state.edits={'f:detail':edits};
+  assert.throws(()=>readProject(JSON.stringify({...flaggedProject,history:invalidHistory})),'revision metadata uses the same validation as current edits');
+}
 assert.throws(()=>readProject(JSON.stringify({...project,history:{...history,active:'missing'}})));
 assert.throws(()=>readProject(JSON.stringify({...project,history:{...history,revisions:[history.revisions[2]]}})));
 for(let i=0;i<501;i++)history=appendRevision(history,defaultChartState(),'Change');

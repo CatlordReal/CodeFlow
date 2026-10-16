@@ -6,13 +6,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import FlowNodeCard from "./FlowNodeCard";
 import { createSvgDocument, svgPaletteFromCss } from "./exportSvg";
-import { layoutGraph, NODE_WIDTH, nodeHeight, type CanvasEdge, type CanvasNode } from "./layout";
+import { edgeTypes, layoutGraph, NODE_WIDTH, nodeHeight, type CanvasEdge, type CanvasNode } from "./layout";
 import {
   hideGraphNodes, nodePresentationKey, presentGraph, presentLoopEdgeLabels,
   type CaptionSets, type ChartEdits, type ChartMode, type LoopOverrides,
 } from "./presentation";
 import {
-  arrangeProgramGroups, buildProgramCallEdges, composeProgramSvg, namespaceProgramDiagram,
+  arrangeProgramGroups, buildProgramCallEdges, composeProgramSvg, namespaceProgramDiagram, positionProgramEdges,
   isProgramEntry, programBounds, programGroupId, type ProgramDiagram, type ProgramPosition, type ProgramReference,
 } from "./programLayout";
 import { overviewGraph, simplifyGraph } from "./simplify";
@@ -134,8 +134,8 @@ export default function ProgramBoard(props: ProgramBoardProps) {
             return { ...shown, unmodified: mode === "natural" && highlightUnmodified && edits[key]?.[node.id]?.natural === undefined && captions[key]?.[node.id] === undefined };
           }),
         };
-        const laidOut = await layoutGraph(presented);
         const labels = new Map(presentLoopEdgeLabels(presented).edges.map((edge) => [edge.id, edge.label]));
+        const laidOut = await layoutGraph(presented, labels);
         const edges = laidOut.edges.map((edge) => ({ ...edge, label: labels.get(edge.id) || undefined }));
         const size = programBounds(laidOut.nodes);
         return { state: "ready", diagram: { id: item.id, info: item.info, width: size.width, height: size.height, nodes: laidOut.nodes, edges, position: positions[item.info.id] } };
@@ -197,7 +197,11 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   }, [diagrams, results, positions, arranged, allSettled, onSelect, selectedFunctionId, selectedNodeId]);
 
   const edges = useMemo<Edge[]>(() => {
-    const inside = diagrams.flatMap((diagram) => namespaceProgramDiagram(diagram.id, diagram.nodes, diagram.edges).edges.map((edge) => ({ ...edge, type: "smoothstep", data: undefined, labelStyle: { fill: "var(--text)", fontSize: 10, fontWeight: 650 }, labelBgStyle: { fill: "var(--panel)", fillOpacity: .94 }, labelBgPadding: [5, 3] as [number, number], labelBgBorderRadius: 5 })));
+    const groupPositions = new Map(nodes.filter((node) => node.type === "programGroup").map((node) => [node.id, node.position]));
+    const inside = diagrams.flatMap((diagram) => {
+      const offset = groupPositions.get(diagram.id) ?? diagram.position ?? { x: 0, y: 0 };
+      return positionProgramEdges(diagram.id, diagram.edges, offset, { x: GROUP_PADDING, y: HEADER_HEIGHT });
+    });
     const cross = calls.map((call) => ({
       id: call.id, source: call.source, target: call.target,
       sourceHandle: call.source === call.sourceGroup ? "call-out-right" : "out-e",
@@ -208,7 +212,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
       labelBgStyle: { fill: "var(--panel)", fillOpacity: .94 }, labelBgPadding: [5, 3] as [number, number], zIndex: 3,
     }));
     return [...inside, ...cross];
-  }, [diagrams, calls]);
+  }, [diagrams, calls, nodes]);
 
   const onNodesChange = useCallback((changes: NodeChange<BoardNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
   const persist = useCallback((_event: MouseEvent | TouchEvent, node: BoardNode) => {
@@ -247,7 +251,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   const ready = Object.values(results).filter((result) => result.state === "ready").length;
   const errors = Object.values(results).filter((result) => result.state === "error").length;
   return <section className={`program-board mode-${mode}`} aria-label="Whole program flowchart">
-    {members.length ? <ReactFlow<BoardNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={(instance) => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeDragStop={persist} onNodeClick={selectNode} onPaneClick={onClearSelection} nodesConnectable={false} nodesDraggable minZoom={.05} maxZoom={1.6} proOptions={{ hideAttribution: true }}>
+    {members.length ? <ReactFlow<BoardNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={(instance) => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeDragStop={persist} onNodeClick={selectNode} onPaneClick={onClearSelection} nodesConnectable={false} nodesDraggable minZoom={.05} maxZoom={1.6} proOptions={{ hideAttribution: true }}>
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="var(--line)" />
       <Controls showInteractive={false} position="bottom-right" />
       <MiniMap position="bottom-left" pannable zoomable nodeColor={(node) => node.type === "programGroup" ? (isProgramEntry((node as GroupNode).data.diagram.info) ? palette.terminatorStroke : palette.processStroke) : "transparent"} maskColor="color-mix(in srgb, var(--panel) 72%, transparent)" />

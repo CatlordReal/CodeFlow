@@ -27,4 +27,8 @@
 .flow-edge-label { position: absolute; padding: 2px 4px; border-radius: 3px; color: var(--text); background: var(--panel); font: 600 11px/16px ui-sans-serif, system-ui, sans-serif; pointer-events: none; }
 .flow-edge-label.is-selected { color: var(--accent); }
 
-.flow-symbol[data-loop] .flow-symbol__content,.flow-symbol[data-flagged] .flow-symbol__content {transform:translateY(11px);}
+
+
+.flow-symbol__flags { position:absolute; z-index:1; top:7px; right:10px; display:flex; gap:4px; }
+.flow-symbol__flags .flow-symbol__flag-marker { position:static; }
+.flow-symbol__flag-marker--update { border-color:var(--diagram-io-stroke); background:var(--diagram-io-fill); }
