@@ -8,11 +8,11 @@ const graph=(nodes:FlowNode[]):FlowGraph=>({nodes,edges:[],diagnostics:[]});
 const before=graph([node('a','x=1'),node('b','y=2')]);
 const after=graph([node('c','x=1'),node('d','y=3')]);
 const state=defaultChartState();
-state.edits={'function:10:overview':{a:{natural:'Set x',annotation:'Keep note',flagged:true,flaggedForUpdate:true,loopContinueLabel:'Keep going',loopExitLabel:'Done'},b:{natural:'Set y',flaggedForUpdate:true}}};
+state.edits={'function:10:overview':{a:{position:{x:70,y:90},natural:'Set x',annotation:'Keep note',flagged:true,flaggedForUpdate:true,loopContinueLabel:'Keep going',loopExitLabel:'Done'},b:{natural:'Set y',flaggedForUpdate:true}}};
 state.captions={'function:10:detail':{a:'Initialise x',b:'Initialise y'}};
 state.hiddenBoxes={'function:10':['a']};state.functionPositions={'function:10':{x:90,y:100}};
 const mapped=remapChart(state,[mapFunction('function:10','function:2',before,after)]);
-assert.deepEqual(mapped.edits,{'function:2:overview':{c:{natural:'Set x',annotation:'Keep note',flagged:true,flaggedForUpdate:true,loopContinueLabel:'Keep going',loopExitLabel:'Done'}}},'stable identities preserve flags and branch text; changed source discards stale metadata');
+assert.deepEqual(mapped.edits,{'function:2:overview':{c:{position:{x:70,y:90},natural:'Set x',annotation:'Keep note',flagged:true,flaggedForUpdate:true,loopContinueLabel:'Keep going',loopExitLabel:'Done'}}},'stable identities preserve flags and branch text; changed source discards stale metadata');
 assert.deepEqual(mapped.captions,{'function:2:detail':{c:'Initialise x'}});
 assert.deepEqual(mapped.hiddenBoxes,{'function:2':['c']});
 assert.deepEqual(mapped.functionPositions,{'function:2':{x:90,y:100}});
@@ -87,3 +87,53 @@ for(const language of ['cpp','csharp'] as const){
  for(const field of ['edits','captions'] as const)assert.deepEqual(mapped[field][kept+':overview'],multiLanguage[field][kept+':overview']);
  assert.equal(Object.keys(mapped.edits).length,1,'removed active-language functions must still invalidate their edits');
 }
+
+// Source transitions must not rewrite the only copy of earlier revision records.
+const { appendRevision, initialHistory } = await import('../src/history');
+const { restoreArchivedHistory } = await import('../src/preservation');
+const loopSource = 'void f(){ for (;;) { work(); } keep(); }';
+const commentedSource = 'void f(){ /* for (;;) { work(); } */ keep(); }';
+const loopGraph = graph([node('loop','for (;;) { work(); }','loop'),node('work','work()'),node('keep','keep()')]);
+const commentGraph = graph([node('keep-new','keep()')]);
+const loopState = defaultChartState();
+loopState.edits = {'f:overview':{loop:{annotation:'Loop note'},work:{natural:'Work caption'},keep:{natural:'Keep caption'}}};
+const oldHistory = appendRevision(initialHistory(loopState), {...loopState,edits:{'f:overview':{...loopState.edits['f:overview'],loop:{annotation:'Revised loop note'}}}}, 'Edit note');
+const commentedHistory = {...oldHistory,revisions:oldHistory.revisions.map(revision=>({...revision,state:remapChart(revision.state,[mapFunction('f','f',loopGraph,commentGraph)])}))};
+assert.equal(commentedHistory.revisions[1].state.edits['f:overview']['keep-new'].natural, 'Keep caption');
+assert.equal(commentedHistory.revisions[1].state.edits['f:overview'].loop, undefined, 'removed loop note does not attach to changed code');
+const archive = {source:loopSource,language:'cpp' as const,history:oldHistory};
+assert.equal(restoreArchivedHistory(commentedHistory,archive,commentedSource,'cpp'),commentedHistory, 'archive is not attached to different source');
+const returned = {...commentedHistory,revisions:commentedHistory.revisions.map(revision=>({...revision,state:remapChart(revision.state,[mapFunction('f','f',commentGraph,loopGraph)])}))};
+const restored = restoreArchivedHistory(returned,archive,loopSource,'cpp');
+assert.equal(restored.revisions[0].state.edits['f:overview'].loop.annotation,'Loop note');
+assert.equal(restored.revisions[1].state.edits['f:overview'].loop.annotation,'Revised loop note');
+assert.equal(restored.revisions[1].state.edits['f:overview'].keep.natural,'Keep caption');
+assert.equal(restoreArchivedHistory(returned,archive,loopSource,'csharp'),returned, 'archive is language scoped');
+assert.equal(oldHistory.revisions[1].state.edits['f:overview'].loop.annotation,'Revised loop note', 'archived history remains unchanged');
+
+const { readProject } = await import('../src/presentation');
+const persistedProject = {format:'codeflow',version:1,source:commentedSource,fileName:'test.cpp',...commentedHistory.revisions[1].state,history:commentedHistory,sourceHistory:[archive]};
+const reopened = readProject(JSON.stringify(persistedProject));
+assert.deepEqual(reopened.sourceHistory?.[0].history, oldHistory, 'source history survives save and reopen');
+const restoredAfterOpen = restoreArchivedHistory(returned,reopened.sourceHistory![0],loopSource,'cpp');
+assert.equal(restoredAfterOpen.revisions[1].state.edits['f:overview'].loop.annotation,'Revised loop note');
+for (const sourceHistory of [null, {}, Array(11).fill(archive), [{...archive, source:'é'.repeat(1048577)}], [{...archive,language:'python'}], [{...archive,history:{...oldHistory,active:'missing'}}], [{...archive,history:{...oldHistory,revisions:[{...oldHistory.revisions[0],state:{...loopState,edits:{f:{n:{annotation:5}}}}}]}}]]) {
+  assert.throws(()=>readProject(JSON.stringify({...persistedProject,sourceHistory})), 'invalid archive is rejected');
+}
+
+const { retainSourceHistory } = await import('../src/preservation');
+const latestArchive = {source:'// latest café',language:'cpp' as const,history:archive.history};
+const archiveProject = {...reopened,sourceHistory:[archive,latestArchive]};
+const retained = retainSourceHistory(archiveProject,latestArchive);
+assert.equal(retained.archives[0],latestArchive,'latest snapshot is always first');
+assert.equal(retained.archives.filter(item=>item.source===latestArchive.source).length,1,'exact duplicate is removed');
+assert.equal(retained.trimmed,0);
+const largeOld = {...archive,source:'é'.repeat(8 * 1024 * 1024)};
+const trimmed = retainSourceHistory({...archiveProject,sourceHistory:[largeOld,archive]},latestArchive);
+assert.equal(trimmed.trimmed,1,'oversized old snapshot is reported');
+assert.deepEqual(trimmed.archives,[latestArchive,archive],'smaller older snapshot remains');
+assert.throws(()=>retainSourceHistory(archiveProject,{...latestArchive,source:'é'.repeat(8 * 1024 * 1024)}),/Cannot preserve this source change safely/,'latest snapshot must never be discarded');
+const many = Array.from({length:11},(_,index)=>({...archive,source:`// ${index}`}));
+const limited = retainSourceHistory({...archiveProject,sourceHistory:many},latestArchive);
+assert.equal(limited.archives.length,10);
+assert.equal(limited.trimmed,2,'ten-snapshot limit reports evictions');

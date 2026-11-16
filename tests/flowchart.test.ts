@@ -4,7 +4,8 @@ import { analyzeLoops, overviewGraph, simplifyGraph } from "../src/simplify";
 import { layoutGraph, NODE_WIDTH, nodeHeight, routeLabelBounds, routeLabelPosition, type RouteBounds, type RoutePoint } from "../src/layout";
 import { createSvgDocument } from "../src/exportSvg";
 import type { FlowGraph, FlowNode } from "../src/types";
-import { functionViewportFitKey } from "../src/viewport";
+import { functionAtByte, nodeAtByte } from "../src/sourceNavigation";
+import { editorAwareCenter, functionViewportFitKey } from "../src/viewport";
 
 const viewportState = { source: "int work() {}", functionId: "work", loopDepth: 1, loopOverrides: {}, hiddenNodeIds: [], showHiddenNodes: false };
 const viewportFit = functionViewportFitKey(viewportState);
@@ -125,9 +126,9 @@ function boundsOverlap(left: RouteBounds, right: RouteBounds): boolean {
 
 const loopBounds = { x: 0, y: 0, width: NODE_WIDTH, height: 100 };
 const longBranch = "not (every pending request has completed successfully)";
-const outsideLoop = routeLabelPosition([{ x: NODE_WIDTH, y: 50 }, { x: NODE_WIDTH + 80, y: 50 }], longBranch, [loopBounds]);
+const outsideLoop = routeLabelPosition([{ x: NODE_WIDTH, y: 50 }, { x: NODE_WIDTH + 800, y: 50 }], longBranch, [loopBounds]);
 assert(!boundsOverlap(routeLabelBounds(outsideLoop, longBranch), loopBounds), "long branch label must clear loop box");
-assert(outsideLoop.x > NODE_WIDTH, "horizontal branch label must stay beside its outgoing route");
+assert(outsideLoop.x > NODE_WIDTH && outsideLoop.y === 50, "horizontal branch label must stay on its outgoing route");
 
 async function verifyLayout(simple: FlowGraph, name: string) {
   const canvas = await layoutGraph(simple);
@@ -192,3 +193,26 @@ if (existsSync(fixturePath)) {
   writeFileSync(new URL("./overview-graphs.json", fixturePath), JSON.stringify(overviews));
 }
 console.log("Flowchart regression checks passed");
+
+const canvasBounds = {left:100,top:40,width:1000,height:600};
+const editorBounds = {left:800,top:40,width:300,height:600};
+assert.deepEqual(editorAwareCenter({x:200,y:100},canvasBounds,editorBounds,2),{x:275,y:100},'selected point centers in unobscured region at unchanged zoom');
+assert.deepEqual(editorAwareCenter({x:200,y:100},canvasBounds,{...editorBounds,left:1200},1),{x:200,y:100},'editor outside canvas uses canvas center');
+assert.deepEqual(editorAwareCenter({x:200,y:100},canvasBounds,{...editorBounds,top:700},1),{x:200,y:100},'vertical non-overlap uses canvas center');
+assert.deepEqual(editorAwareCenter({x:200,y:100},canvasBounds,{...editorBounds,left:120},1),{x:200,y:100},'very narrow area falls back safely');
+assert.deepEqual(editorAwareCenter({x:200,y:100},canvasBounds,null,1),{x:200,y:100});
+assert.deepEqual(editorAwareCenter({x:200,y:100},canvasBounds,editorBounds,0),{x:350,y:100},'invalid zoom avoids non-finite coordinates');
+
+const defs = [{id:'outer',name:'outer',line:1,start_byte:10,end_byte:80},{id:'inner',name:'inner',line:2,start_byte:30,end_byte:50},{id:'old',name:'old',line:1}];
+assert.equal(functionAtByte(defs,35)?.id,'inner');
+assert.equal(functionAtByte(defs,50)?.id,'outer');
+assert.equal(functionAtByte(defs,80),undefined);
+const spans: FlowNode[] = [
+ {id:'start',kind:'start',label:'',line:1,start_byte:31,end_byte:32,comments:[]},
+ {id:'loop',kind:'loop',label:'',line:1,start_byte:20,end_byte:70,comments:[]},
+ {id:'step',kind:'process',label:'',line:1,start_byte:30,end_byte:35,comments:[]},
+];
+assert.equal(nodeAtByte(spans,31)?.id,'step');
+assert.equal(nodeAtByte(spans,40)?.id,'loop');
+assert.equal(nodeAtByte(spans,70),undefined);
+assert.equal(nodeAtByte(spans,NaN),undefined);

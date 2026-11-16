@@ -2,7 +2,7 @@ import type {ChartHistory} from './history';
 import type { FlowGraph, FlowNode, SourceLanguage, ChartView } from './types';
 
 export type ChartMode = 'code' | 'natural';
-export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean; flaggedForUpdate?: boolean; loopContinueLabel?: string; loopExitLabel?: string };
+export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean; flaggedForUpdate?: boolean; loopContinueLabel?: string; loopExitLabel?: string; position?: {x:number;y:number} };
 export type ChartEdits = Record<string, Record<string, NodeEdit>>;
 export type CaptionSets = Record<string, Record<string, string>>;
 
@@ -31,12 +31,13 @@ export function presentGraph(graph: FlowGraph, mode: ChartMode, comments: boolea
     flaggedForUpdate: edits[node.id]?.flaggedForUpdate ?? false,
     loopContinueLabel: edits[node.id]?.loopContinueLabel,
     loopExitLabel: edits[node.id]?.loopExitLabel,
+    position: edits[node.id]?.position,
     comments: comments ? node.comments : [],
   })) };
 }
 
 /** Replace structural loop branch labels without mutating analyzer output. */
-export function presentLoopEdgeLabels(graph: FlowGraph): FlowGraph {
+export function presentLoopEdgeLabels(graph: FlowGraph, showLabels = true): FlowGraph {
   const loops = new Map(graph.nodes
     .filter(node => node.kind === 'loop')
     .map(node => [node.id, {
@@ -51,6 +52,7 @@ export function presentLoopEdgeLabels(graph: FlowGraph): FlowGraph {
     edges: graph.edges.map(edge => {
       const loop = loops.get(edge.source);
       if (!loop) return edge;
+      if (!showLabels) return { ...edge, label: '' };
       if (edge.label === 'Yes') return { ...edge, label: loop.continueLabel ?? (loop.forLoop ? loop.condition ?? (loop.range ? 'Next item' : 'Always') : 'Looping') };
       if (edge.label === 'No') return { ...edge, label: loop.exitLabel ?? (loop.forLoop ? loop.condition ? `not (${loop.condition})` : (loop.range ? 'Finished' : 'Never') : 'Ended') };
       return edge;
@@ -63,9 +65,10 @@ export function nodePresentationKey(functionId: string, node: FlowNode, depth: n
   return functionId + ((node.loop_id ? !node.loop_collapsed : depth === null) ? ':detail' : ':overview');
 }
 
-export type Project = { format: 'codeflow'; version: 1; source: string; fileName: string; language?: SourceLanguage; view?: ChartView; mode: ChartMode; edits: ChartEdits; captions: CaptionSets; expandLoops: boolean; includeComments: boolean; loopDepth: number | null; loopOverrides: LoopOverrides; hiddenBoxes: Record<string,string[]>; showHiddenBoxes: boolean; functionPositions: Record<string,{x:number;y:number}>; history?: ChartHistory; labelSource?:string };
+export type SourceHistoryArchive = { source: string; language: SourceLanguage; history: ChartHistory };
+export type Project = { format: 'codeflow'; version: 1; source: string; fileName: string; language?: SourceLanguage; view?: ChartView; mode: ChartMode; edits: ChartEdits; captions: CaptionSets; expandLoops: boolean; includeComments: boolean; showLoopLabels?: boolean; loopDepth: number | null; loopOverrides: LoopOverrides; hiddenBoxes: Record<string,string[]>; showHiddenBoxes: boolean; functionPositions: Record<string,{x:number;y:number}>; history?: ChartHistory; sourceHistory?: SourceHistoryArchive[]; labelSource?:string };
 export function readProject(text: string): Project {
-  if (text.length > 16 * 1024 * 1024) throw new Error('Project is larger than 16 MB.');
+  if (new TextEncoder().encode(text).length > 16 * 1024 * 1024) throw new Error('Project is larger than 16 MB.');
   const value = JSON.parse(text);
   if (value?.format !== 'codeflow' || value.version !== 1 || typeof value.source !== 'string'
     || new TextEncoder().encode(value.source).length > 2 * 1024 * 1024
@@ -85,6 +88,11 @@ export function readProject(text: string): Project {
         } else {
           if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid node edit.');
           for (const [key, label] of Object.entries(item)) {
+            if (key === 'position') {
+              const p = label as {x?:unknown;y?:unknown} | null;
+              if (!p || typeof p !== 'object' || Array.isArray(p) || Object.keys(p).some(k => k !== 'x' && k !== 'y') || typeof p.x !== 'number' || typeof p.y !== 'number' || !Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > 10000000 || Math.abs(p.y) > 10000000) throw new Error('Invalid node position.');
+              continue;
+            }
             if (key==='flagged' || key==='flaggedForUpdate' ? typeof label !== 'boolean' : (!['code','natural','annotation','loopContinueLabel','loopExitLabel'].includes(key) || typeof label !== 'string' || label.length > 2000)) throw new Error('Invalid node text.');
           }
         }
@@ -95,6 +103,8 @@ export function readProject(text: string): Project {
   if(typeof value.labelSource!=='string'||new TextEncoder().encode(value.labelSource).length>2*1024*1024)throw new Error('Invalid label source.');
   records(value.edits, false); records(value.captions, true);
   value.expandLoops ??= false; value.includeComments ??= false;
+  if (value.showLoopLabels === undefined) value.showLoopLabels = true;
+  if (typeof value.showLoopLabels !== 'boolean') throw new Error('Invalid loop-label option.');
   if(typeof value.expandLoops!=='boolean' || typeof value.includeComments!=='boolean') throw new Error('Invalid project view options.');
   if (value.loopDepth === undefined) value.loopDepth = value.expandLoops ? null : 0;
   if (value.loopDepth !== null && (!Number.isInteger(value.loopDepth) || value.loopDepth < 0 || value.loopDepth > 100)) throw new Error('Invalid loop depth.');
@@ -120,10 +130,21 @@ export function readProject(text: string): Project {
       if(!revision||!validLoopKey(revision.id)||ids.has(revision.id)||typeof revision.name!=='string'||revision.name.length>120||(revision.parent!==null&&!ids.has(revision.parent)))throw new Error('Invalid chart revision.');
       ids.add(revision.id);const number=/^revision-(\d+)$/.exec(revision.id);if(number)largest=Math.max(largest,Number(number[1]));
       if(!revision.state||typeof revision.state!=='object'||Array.isArray(revision.state))throw new Error('Invalid chart revision state.');
-      const validated=readProject(JSON.stringify({format:'codeflow',version:1,source:'',fileName:'history.cpp',...revision.state,history:undefined}));
+      const validated=readProject(JSON.stringify({format:'codeflow',version:1,source:'',fileName:'history.cpp',...revision.state,history:undefined,sourceHistory:undefined}));
       revision.state={mode:validated.mode,edits:validated.edits,captions:validated.captions,loopDepth:validated.loopDepth,loopOverrides:validated.loopOverrides,hiddenBoxes:validated.hiddenBoxes,showHiddenBoxes:validated.showHiddenBoxes,functionPositions:validated.functionPositions};
     }
     if(!ids.has(h.active)||h.next<=largest)throw new Error('Invalid active chart revision.');
+  }
+  if (value.sourceHistory !== undefined) {
+    if (!Array.isArray(value.sourceHistory) || value.sourceHistory.length > 10) throw new Error('Invalid source history.');
+    for (const archive of value.sourceHistory) {
+      if (!archive || typeof archive !== 'object' || Array.isArray(archive) || typeof archive.source !== 'string'
+        || new TextEncoder().encode(archive.source).length > 2 * 1024 * 1024
+        || !['cpp', 'csharp'].includes(archive.language) || !archive.history) throw new Error('Invalid source history.');
+      const validated = readProject(JSON.stringify({ ...value, source: archive.source, labelSource: archive.source,
+        language: archive.language, history: archive.history, sourceHistory: undefined }));
+      archive.history = validated.history;
+    }
   }
   value.expandLoops = value.loopDepth === null;
   return value as Project;
@@ -147,13 +168,20 @@ export function hideGraphNodes(graph: FlowGraph, hiddenIds: string[], showHidden
   const outgoing=new Map<string,typeof graph.edges>();for(const edge of graph.edges)outgoing.set(edge.source,[...(outgoing.get(edge.source)??[]),edge]);
   const edges:typeof graph.edges=[];const seen=new Set<string>();
   for(const node of nodes){
-    const walk=(id:string,label:string,visited:Set<string>)=>{
-      if(!hidden.has(id)){const key=JSON.stringify([node.id,id,label]);if(!seen.has(key)){seen.add(key);edges.push({id:`visible-${edges.length}`,source:node.id,target:id,label});}return;}
+    const walk=(id:string,label:string,visited:Set<string>,throughLoop:boolean)=>{
+      if(!hidden.has(id)){if(throughLoop && id===node.id)return;const key=JSON.stringify([node.id,id,label]);if(!seen.has(key)){seen.add(key);edges.push({id:`visible-${edges.length}`,source:node.id,target:id,label});}return;}
       if(visited.has(id))return;const nextVisited=new Set(visited).add(id);
       const step=graph.nodes.find(n=>n.id===id)!;
-      for(const edge of outgoing.get(id)??[]){const text=['decision','loop','switch'].includes(step.kind) ? `${step.original_label ?? step.label}${edge.label?' · '+edge.label:''}`:edge.label;walk(edge.target,[label,text].filter(Boolean).join(' / '),nextVisited);}
+      const loop=step.kind==='loop';
+      const fromLoopBody=loop && node.start_byte>=step.start_byte && node.start_byte<step.end_byte;
+      for(const edge of outgoing.get(id)??[]){
+        if(loop && fromLoopBody && (edge.label==='Yes' || edge.label==='Repeat'))continue;
+        const text=loop?'':['decision','switch'].includes(step.kind) ? `${step.original_label ?? step.label}${edge.label?' · '+edge.label:''}`:edge.label;
+        const prior=loop && (label==='Repeat' || label==='Continue')?'':label;
+        walk(edge.target,[prior,text].filter(Boolean).join(' / '),nextVisited,throughLoop||loop);
+      }
     };
-    for(const edge of outgoing.get(node.id)??[])walk(edge.target,edge.label,new Set());
+    for(const edge of outgoing.get(node.id)??[])walk(edge.target,edge.label,new Set(),false);
   }
   return {...graph,nodes,edges};
 }

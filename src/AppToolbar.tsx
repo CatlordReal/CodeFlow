@@ -1,9 +1,14 @@
 import { useEffect, useRef, type ChangeEvent, type KeyboardEvent, type SyntheticEvent } from "react";
 import type { RecentProject } from "./api";
+import FullscreenControl from './FullscreenControl';
+import { THEMES, type ThemeId } from './themes';
 import ThemePicker from "./ThemePicker";
 import "./AppToolbar.css";
 
 export type AppToolbarProps = {
+  onFullscreenError: (message:string)=>void;
+  exportTheme: ThemeId | 'current';
+  onExportThemeChange: (theme:ThemeId|'current')=>void;
   language: "cpp" | "csharp";
   onLanguageChange: (language: "cpp" | "csharp") => void;
   recentProjects: RecentProject[];
@@ -39,7 +44,7 @@ function Icon({ name }: { name: IconName }) {
 }
 
 export default function AppToolbar({
-  language,
+  language, onFullscreenError, exportTheme, onExportThemeChange,
   onLanguageChange,
   recentProjects,
   onNewProject,
@@ -107,6 +112,7 @@ export default function AppToolbar({
       </div>
 
       <div className="toolbar app-toolbar__actions" ref={toolbarRef} onKeyDown={handleKeyDown}>
+        <FullscreenControl onError={onFullscreenError}/>
         <button className="button app-toolbar__quick" onClick={() => run(onAnalyze)} title="Analyze again (Ctrl/⌘ Enter)" aria-label="Analyze again"><Icon name="refresh" /><span>Analyze again</span></button>
         <button className="button app-toolbar__quick" disabled={updateBusy} onClick={() => run(onCheckUpdates)} title="Check for updates" aria-label="Check for updates"><Icon name="update" /><span>Check updates</span></button>
         <details className="app-toolbar__group" onToggle={handleToggle}>
@@ -147,6 +153,7 @@ export default function AppToolbar({
         <details className="app-toolbar__group app-toolbar__group--end" onToggle={handleToggle}>
           <summary className="button button--primary">Export <Icon name="chevron" /></summary>
           <div className="app-toolbar__menu" role="group" aria-label="Export actions">
+            <label className="app-toolbar__export-theme">Colour scheme<select aria-label="Export colour scheme" value={exportTheme} onChange={event=>onExportThemeChange(event.target.value as ThemeId|'current')}><option value="current">Current app</option>{THEMES.filter(theme=>theme.family!=='Solar / Sand').map(theme=><option key={theme.id} value={theme.id}>{theme.name}</option>)}</select></label>
             <button disabled={!exportReady} onClick={() => run(onExportSvg)}><Icon name="export" /> Export SVG</button>
             <button disabled={!exportReady} onClick={() => run(onExportPng)}>Export PNG</button>
           </div>

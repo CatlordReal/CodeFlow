@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ProgramAnalysisCache } from "../src/programAnalysisCache";
 import type { CanvasNode } from "../src/layout";
 import {
   arrangeProgramGroups, buildProgramCallEdges, composeProgramSvg, namespaceProgramDiagram, positionProgramEdges, programGroupId,
@@ -66,6 +67,9 @@ const palette = { background: "#000", edgeLabelBackground: "#111", text: "#fff",
 const escaped = [{ ...diagrams[0], info: { ...diagrams[0].info, name: "main <entry>&" } }, diagrams[1]];
 const svg = composeProgramSvg(escaped, [{ ...calls[0], label: "calls <helper>&" }], positions, palette, () => '<svg viewBox="0 0 10 10"><text>&amp;</text></svg>');
 assert(svg.includes("main &lt;entry&gt;&amp;") && svg.includes("calls &lt;helper&gt;&amp;"), "export escapes function and call labels");
+assert(svg.includes('class="cf-program-call-halo"') && svg.includes('class="cf-program-call-text"') && !svg.includes('paint-order:'), "call text paints above halo without paint-order");
+const blankCallSvg = composeProgramSvg(diagrams, [{ ...calls[0], label: "   " }], positions, palette, () => '<svg viewBox="0 0 10 10"></svg>');
+assert(!blankCallSvg.includes('class="cf-program-call-halo"'), "blank call labels are omitted");
 assert(svg.includes("stroke-dasharray:8 6"), "export preserves dashed call links");
 assert(svg.indexOf('class="group"') < svg.indexOf('class="call"'), "export call links layer above group cards like canvas links");
 const overflowing = composeProgramSvg([{ ...diagrams[0], width: 100, height: 100 }], [], { "program:function:main": { x: 40, y: 50 } }, palette, () => '<svg viewBox="-200 -70 700 400"><text>wide label</text></svg>');
@@ -75,3 +79,13 @@ assert(composeProgramSvg(diagrams, calls, positions, palette, () => '<svg viewBo
 assert.equal(composeProgramSvg([{ ...diagrams[0], error: "Unavailable" }], [], positions, palette, () => ""), "", "export remains empty when any group failed");
 
 console.log("PASS: program board keeps IDs, strict calls, non-overlap, and escaped complete export");
+
+const cache = new ProgramAnalysisCache<number>();
+let parseCount = 0;
+const load = async () => ++parseCount;
+assert.equal(await cache.use('source-a', 'main', load), 1);
+assert.equal(await cache.use('source-a', 'main', load), 1, 'presentation and undo reuse parsed source');
+assert.equal(await cache.use('source-b', 'main', load), 2, 'source changes invalidate parsed source');
+let attempts = 0;
+await assert.rejects(cache.use('source-b', 'failed', async () => { attempts++; throw new Error('failed'); }));
+assert.equal(await cache.use('source-b', 'failed', async () => ++attempts), 2, 'failed parse can retry');

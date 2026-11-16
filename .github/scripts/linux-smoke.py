@@ -428,6 +428,74 @@ public class Demo {
                     if time.monotonic() > deadline:
                         raise RuntimeError("Native recovery did not save C# whole-program state")
                     time.sleep(.2)
+                # Intercept only final file writes; SVG generation and PNG rasterization run in WebKitGTK.
+                assert driver.script("""
+                    const controls = [...document.querySelectorAll('.node-editor .flag-box input')];
+                    if (controls.length !== 2) return false;
+                    if (!controls[0].checked) controls[0].click();
+                    return true;
+                """), "Removal flag control missing"
+                driver.wait("Boolean(document.querySelector('.program-board .flow-symbol[data-flagged]'))", "removal flag rendered")
+                assert driver.script("""
+                    const input = document.querySelectorAll('.node-editor .flag-box input')[1];
+                    if (!input) return false;
+                    if (!input.checked) input.click();
+                    return true;
+                """), "Update flag control missing"
+                driver.wait("Boolean(document.querySelector('.program-board .flow-symbol[data-flagged][data-flagged-for-update]'))", "both flags rendered")
+                assert driver.script("""
+                    const native = window.__TAURI_INTERNALS__;
+                    if (!native || window.__codeflowOriginalInvoke) return false;
+                    window.__codeflowOriginalInvoke = native.invoke;
+                    window.__codeflowExports = {};
+                    native.invoke = function(command, args, options) {
+                        if (command === 'save_document' && (args?.extension === 'svg' || args?.extension === 'png')) {
+                            window.__codeflowExports[args.extension] = args.contents;
+                            return Promise.resolve(true);
+                        }
+                        return window.__codeflowOriginalInvoke.call(this, command, args, options);
+                    };
+                    return native.invoke !== window.__codeflowOriginalInvoke;
+                """), "Could not intercept export file writes"
+                assert driver.script("""
+                    const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+                      .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('Export'));
+                    if (!menu) return false;
+                    if (!menu.open) menu.querySelector(':scope > summary')?.click();
+                    return menu.open;
+                """), "Export menu missing"
+                driver.select('select[aria-label="Export colour scheme"]', 'catppuccin-latte')
+                assert driver.script("return document.documentElement.dataset.theme") == 'catppuccin-mocha'
+                for extension in ('svg', 'png'):
+                    menu_label = 'Export ' + extension.upper()
+                    driver.wait("""(() => {
+                        const button = [...document.querySelectorAll('.app-toolbar__menu button')]
+                          .find(item => item.textContent.trim() === %s);
+                        return Boolean(button && !button.disabled);
+                    })()""" % json.dumps(menu_label), menu_label + ' ready')
+                    assert driver.script("""
+                        const menu = [...document.querySelectorAll('.app-toolbar__actions > details')]
+                          .find(item => item.querySelector(':scope > summary')?.textContent.trim().startsWith('Export'));
+                        if (!menu?.open) menu?.querySelector(':scope > summary')?.click();
+                        const button = [...(menu?.querySelectorAll('button') ?? [])]
+                          .find(item => item.textContent.trim() === arguments[0]);
+                        if (!button || button.disabled) return false;
+                        button.click(); return true;
+                    """, menu_label), menu_label + ' unavailable'
+                    driver.wait("Boolean(window.__codeflowExports?.%s)" % extension, menu_label + ' generated')
+                exported = driver.script("return window.__codeflowExports")
+                assert exported['svg'].startswith('<svg') and '#eff1f5' in exported['svg'], 'Latte SVG palette missing'
+                assert all(token not in exported['svg'] for token in ('Flagged for removal', 'Flagged for update', 'flag-marker', 'update-marker', 'node-flagged')), 'Flags leaked into SVG'
+                assert driver.script("return Boolean(document.querySelector('.program-board .flow-symbol[data-flagged][data-flagged-for-update]'))"), 'Export changed canvas flags'
+                assert driver.script("return document.documentElement.dataset.theme") == 'catppuccin-mocha', 'Export changed app theme'
+                (args.output / 'linux-export-latte.svg').write_text(exported['svg'])
+                prefix = 'data:image/png;base64,'
+                assert exported['png'].startswith(prefix), 'PNG data URL missing'
+                (args.output / 'linux-export-latte.png').write_bytes(base64.b64decode(exported['png'][len(prefix):], validate=True))
+                driver.script("window.__TAURI_INTERNALS__.invoke = window.__codeflowOriginalInvoke; delete window.__codeflowOriginalInvoke")
+                report['exports'] = {'svg': 'linux-export-latte.svg', 'png': 'linux-export-latte.png',
+                                     'appTheme': 'catppuccin-mocha', 'exportTheme': 'catppuccin-latte',
+                                     'flagsOmitted': True, 'webKitRasterized': True}
                 driver.command("POST", "window/rect", {"width": 900, "height": 900})
                 driver.script("document.querySelector('.program-board .react-flow__controls-fitview')?.click()")
                 time.sleep(.5)

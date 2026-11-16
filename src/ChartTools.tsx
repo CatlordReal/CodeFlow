@@ -5,12 +5,12 @@ export type ChartToolsProps = {
   localAIActive: boolean;
   localAIDisabled: boolean;
   highlightUnmodified: boolean;
-  showHiddenBoxes: boolean;
+  showLoopLabels: boolean;
   canUndo: boolean;
   historyOpen: boolean;
   onToggleLocalAI: () => void;
   onHighlightUnmodifiedChange: (value: boolean) => void;
-  onShowHiddenBoxesChange: (value: boolean) => void;
+  onShowLoopLabelsChange: (value: boolean) => void;
   onUndo: () => void;
   onToggleHistory: () => void;
   onAlternate: () => void;
@@ -21,12 +21,12 @@ export default function ChartTools({
   localAIActive,
   localAIDisabled,
   highlightUnmodified,
-  showHiddenBoxes,
+  showLoopLabels,
   canUndo,
   historyOpen,
   onToggleLocalAI,
   onHighlightUnmodifiedChange,
-  onShowHiddenBoxesChange,
+  onShowLoopLabelsChange,
   onUndo,
   onToggleHistory,
   onAlternate,
@@ -68,8 +68,8 @@ export default function ChartTools({
         <button disabled={localAIDisabled} aria-pressed={localAIActive} onClick={() => run(onToggleLocalAI)}>Local AI</button>
         <button aria-pressed={highlightUnmodified} onClick={() => onHighlightUnmodifiedChange(!highlightUnmodified)}>Highlight unmodified labels</button>
         <label className="chart-tools__check">
-          <input type="checkbox" checked={showHiddenBoxes} onChange={(event) => onShowHiddenBoxesChange(event.target.checked)} />
-          <span>Show hidden boxes</span>
+          <input type="checkbox" checked={showLoopLabels} onChange={(event) => onShowLoopLabelsChange(event.target.checked)} />
+          <span>Loop arrow labels</span>
         </label>
         <span className="chart-tools__divider" />
         <button disabled={!canUndo} onClick={() => run(onUndo)}>Undo</button>

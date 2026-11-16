@@ -137,6 +137,16 @@ fn validate_records(value: &serde_json::Value, captions: bool) -> Result<(), Str
             }
             for (field, label) in object(item, "Invalid node edit.")? {
                 match field.as_str() {
+                    "position" => {
+                        let position = object(label, "Invalid node position.")?;
+                        let valid_coordinate = |key: &str| position.get(key)
+                            .and_then(serde_json::Value::as_f64)
+                            .is_some_and(|coordinate| coordinate.is_finite() && coordinate.abs() <= 10_000_000.0);
+                        if position.keys().any(|key| key != "x" && key != "y")
+                            || !valid_coordinate("x") || !valid_coordinate("y") {
+                            return Err("Invalid node position.".into());
+                        }
+                    }
                     "flagged" | "flaggedForUpdate" if label.is_boolean() => {}
                     "code" | "natural" | "annotation" | "loopContinueLabel" | "loopExitLabel"
                         if label.as_str().is_some_and(|text| text_units(text) <= 2000) => {}
@@ -183,6 +193,7 @@ fn validate_chart_fields(
 
     optional_bool(project, "expandLoops")?;
     optional_bool(project, "includeComments")?;
+    optional_bool(project, "showLoopLabels")?;
     match project.get("loopDepth") {
         None => {}
         Some(serde_json::Value::Null) => {}
@@ -330,6 +341,17 @@ fn validate_chart_and_history(
     validate_chart_fields(project)?;
     if let Some(history) = project.get("history") {
         validate_history(history)?;
+    }
+    if let Some(archives) = project.get("sourceHistory") {
+        let archives = archives.as_array().filter(|items| items.len() <= 10).ok_or("Invalid source history.")?;
+        for archive in archives {
+            let archive = object(archive, "Invalid source history.")?;
+            if archive.get("source").and_then(serde_json::Value::as_str).is_none_or(|source| source.len() > 2 * 1024 * 1024)
+                || !matches!(archive.get("language").and_then(serde_json::Value::as_str), Some("cpp" | "csharp")) {
+                return Err("Invalid source history.".into());
+            }
+            validate_history(archive.get("history").ok_or("Invalid source history.")?)?;
+        }
     }
     Ok(())
 }
@@ -744,10 +766,27 @@ mod tests {
     }
 
     #[test]
+    fn source_history_validates_with_project_history_rules() {
+        let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
+        let state = serde_json::json!({"mode":"natural","edits":{"f:overview":{"loop":{"annotation":"Keep"}}},"captions":{}});
+        let history = serde_json::json!({"active":"revision-0","next":1,"revisions":[{"id":"revision-0","parent":null,"name":"Initial","state":state}]});
+        let archive = serde_json::json!({"source":"old source","language":"cpp","history":history});
+        value["sourceHistory"] = serde_json::json!([archive.clone()]);
+        assert!(validate_recovery_project(&value.to_string()).is_ok());
+        for invalid in [serde_json::json!(null), serde_json::json!({}), serde_json::json!(vec![archive.clone();11]),
+            serde_json::json!([{"source":"old","language":"python","history":history}]),
+            serde_json::json!([{"source":"é".repeat(1_048_577),"language":"cpp","history":history}]),
+            serde_json::json!([{"source":"old","language":"cpp","history":{"active":"missing","next":1,"revisions":[]}}])] {
+            value["sourceHistory"] = invalid;
+            assert!(validate_recovery_project(&value.to_string()).is_err());
+        }
+    }
+
+    #[test]
     fn review_flags_and_loop_labels_validate_and_survive_recovery() {
         let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
         let edits = serde_json::json!({"function:detail":{"loop":{
-            "flagged":true,"flaggedForUpdate":true,
+            "position":{"x":-12.5,"y":90},"flagged":true,"flaggedForUpdate":true,
             "loopContinueLabel":"Keep working","loopExitLabel":"Finished"
         }}});
         value["edits"] = edits.clone();
@@ -769,6 +808,29 @@ mod tests {
             value
         );
 
+        for invalid in [serde_json::json!(null), serde_json::json!(1), serde_json::json!("false"), serde_json::json!({}), serde_json::json!([])] {
+            let mut project = value.clone();
+            project["showLoopLabels"] = invalid;
+            assert!(validate_chart_and_history(project.as_object().unwrap()).is_err());
+            assert!(validate_recovery_project(&project.to_string()).is_err());
+        }
+        for choice in [true, false] {
+            let mut project = value.clone();
+            project["showLoopLabels"] = serde_json::json!(choice);
+            assert!(validate_chart_and_history(project.as_object().unwrap()).is_ok());
+            assert!(validate_recovery_project(&project.to_string()).is_ok());
+        }
+        for invalid in [serde_json::json!(null), serde_json::json!([]), serde_json::json!({}),
+            serde_json::json!({"x":0}), serde_json::json!({"x":0,"y":10000001}),
+            serde_json::json!({"x":"0","y":1}), serde_json::json!({"x":0,"y":1,"z":2})] {
+            let mut current = value.clone();
+            current["edits"]["function:detail"]["loop"]["position"] = invalid.clone();
+            assert!(validate_chart_and_history(current.as_object().unwrap()).is_err());
+            assert!(validate_recovery_project(&current.to_string()).is_err());
+            let mut historical = value.clone();
+            historical["history"]["revisions"][0]["state"]["edits"]["function:detail"]["loop"]["position"] = invalid;
+            assert!(validate_chart_and_history(historical.as_object().unwrap()).is_err());
+        }
         for field in ["flagged", "flaggedForUpdate"] {
             for invalid in [
                 serde_json::json!("true"),

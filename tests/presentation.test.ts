@@ -25,6 +25,9 @@ const loopGraph:FlowGraph={nodes:[
 ],diagnostics:[]};
 const loopOriginal=JSON.stringify(loopGraph);
 assert.deepEqual(presentLoopEdgeLabels(loopGraph).edges.map(edge=>edge.label),['i < 3','not (i < 3)','Next item','Finished','Always','Never','Repeat']);
+const noLoopLabels=presentLoopEdgeLabels(loopGraph,false);
+assert.deepEqual(noLoopLabels.edges.map(edge=>edge.label),['','','','','','','Repeat']);
+assert.deepEqual(noLoopLabels.edges.map(({label,...edge})=>edge),loopGraph.edges.map(({label,...edge})=>edge),'hiding labels preserves edge structure');
 assert.equal(JSON.stringify(loopGraph),loopOriginal,'loop labels must not mutate analyzer output');
 const whileGraph:FlowGraph={...loopGraph,nodes:loopGraph.nodes.map(node=>node.id==='loop'?{...node,label:'ready',loop_condition:'ready'}:node)};
 assert.deepEqual(presentLoopEdgeLabels(whileGraph).edges.slice(0,2).map(edge=>edge.label),['Looping','Ended'],'while/do condition labels use brief defaults');
@@ -42,10 +45,18 @@ for(const mode of ['code','natural'] as const){
   assert.equal(presentGraph(graph,mode,false).nodes[0].flaggedForUpdate,false,'legacy boxes are not flagged for update');
 }
 const project: Project = {format:'codeflow',version:1,source:'int f() {return 1;}',labelSource:'int f() {return 1;}',fileName:'example.cpp',language:'cpp',view:'function',mode:'natural',edits:{'1:overview':{n1:{natural:'Increase x',annotation:'Count a visit'}}},captions:{},expandLoops:false,includeComments:false,loopDepth:0,loopOverrides:{},hiddenBoxes:{},showHiddenBoxes:false,functionPositions:{}};
-assert.deepEqual(readProject(JSON.stringify(project)),project);
-const reviewEdits={flagged:true,flaggedForUpdate:true,loopContinueLabel:'Continue work',loopExitLabel:'Finished work'};
+assert.deepEqual(readProject(JSON.stringify(project)),{...project,showLoopLabels:true});
+assert.equal(readProject(JSON.stringify({...project,showLoopLabels:false})).showLoopLabels,false);
+for(const showLoopLabels of [null,1,'false',{},[]]) assert.throws(()=>readProject(JSON.stringify({...project,showLoopLabels})));
+const reviewEdits={position:{x:-123.5,y:987},flagged:true,flaggedForUpdate:true,loopContinueLabel:'Continue work',loopExitLabel:'Finished work'};
 const reviewProject={...project,edits:{'1:overview':{n1:reviewEdits}}};
 assert.deepEqual(readProject(JSON.stringify(reviewProject)).edits,reviewProject.edits,'all review metadata survives saved projects');
+assert.deepEqual(presentGraph(graph,'natural',false,{n1:reviewEdits}).nodes[0].position,reviewEdits.position);
+assert.equal(presentGraph(graph,'natural',false).nodes[0].position,undefined);
+for(const position of [null,[],{}, {x:1}, {x:1,y:null}, {x:'1',y:2}, {x:10000001,y:0}, {x:0,y:-10000001}, {x:0,y:0,z:1}]) {
+  assert.throws(()=>readProject(JSON.stringify({...project,edits:{f:{n1:{position}}}})),'invalid node position rejected');
+}
+
 assert.deepEqual(readProject(JSON.stringify({...project,edits:{f:{n1:{flagged:false,flaggedForUpdate:false}}}})).edits.f.n1,{flagged:false,flaggedForUpdate:false});
 for(const field of ['flagged','flaggedForUpdate'])for(const invalid of ['true',1,null,{},[]])assert.throws(()=>readProject(JSON.stringify({...project,edits:{f:{n1:{[field]:invalid}}}})),`${field} must be boolean`);
 for(const field of ['loopContinueLabel','loopExitLabel']){
@@ -76,8 +87,18 @@ const oldProject={...project};delete oldProject.language;delete oldProject.view;
 assert.equal(readProject(JSON.stringify(oldProject)).language,'cpp');
 assert.equal(readProject(JSON.stringify(oldProject)).view,'function');
 const csProject={...project,language:'csharp',view:'program',fileName:'Program.cs'};
-assert.deepEqual(readProject(JSON.stringify(csProject)),csProject);
+assert.deepEqual(readProject(JSON.stringify(csProject)),{...csProject,showLoopLabels:true});
 for(const value of [{...project,language:'java'},{...project,view:'folder'}])assert.throws(()=>readProject(JSON.stringify(value)));
 assert.equal(loopCaption('foreach (var item in values)'), 'For each item in values');
 const csLoop={...loopGraph,nodes:[{...graph.nodes[0],id:'each',kind:'loop',label:'foreach (var item in values)',loop_condition:null}],edges:[{id:'next',source:'each',target:'body',label:'Yes'},{id:'done',source:'each',target:'end',label:'No'}]};
 assert.deepEqual(presentLoopEdgeLabels(csLoop).edges.map(edge=>edge.label),['Next item','Finished']);
+
+const hiddenLoopGraph: FlowGraph = {nodes:[
+ {...graph.nodes[0],id:'entry',kind:'start',start_byte:0,end_byte:0},
+ {...graph.nodes[0],id:'loop',kind:'loop',label:'while (ready)',start_byte:10,end_byte:50},
+ {...graph.nodes[0],id:'body',kind:'process',start_byte:20,end_byte:30},
+ {...graph.nodes[0],id:'exit',kind:'end',start_byte:60,end_byte:60},
+],edges:[{id:'a',source:'entry',target:'loop',label:''},{id:'b',source:'loop',target:'body',label:'Yes'},
+{id:'c',source:'body',target:'loop',label:'Repeat'},{id:'d',source:'loop',target:'exit',label:'No'}],diagnostics:[]};
+const hiddenLoop=hideGraphNodes(hiddenLoopGraph,['loop'],false);
+assert.deepEqual(hiddenLoop.edges.map(({source,target,label})=>[source,target,label]),[['entry','body',''],['entry','exit',''],['body','exit','']]);

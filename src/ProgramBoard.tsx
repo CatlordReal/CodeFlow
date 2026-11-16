@@ -4,8 +4,12 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
+import AlignmentGuides from './AlignmentGuides';
+import { positionedCanvas, snapBoxPosition, type AlignmentGuide } from './boxGeometry';
+import { ProgramAnalysisCache } from './programAnalysisCache';
+import { editorAwareCenter } from './viewport';
 import FlowNodeCard from "./FlowNodeCard";
-import { createSvgDocument, svgPaletteFromCss } from "./exportSvg";
+import { createSvgDocument, svgPaletteFromCss, type SvgPalette } from "./exportSvg";
 import { edgeTypes, layoutGraph, NODE_WIDTH, nodeHeight, type CanvasEdge, type CanvasNode } from "./layout";
 import {
   hideGraphNodes, nodePresentationKey, presentGraph, presentLoopEdgeLabels,
@@ -16,7 +20,7 @@ import {
   isProgramEntry, programBounds, programGroupId, type ProgramDiagram, type ProgramPosition, type ProgramReference,
 } from "./programLayout";
 import { overviewGraph, simplifyGraph } from "./simplify";
-import type { FunctionInfo, SourceLanguage } from "./types";
+import type { FlowGraph, FunctionInfo, SourceLanguage } from "./types";
 import "./ProgramBoard.css";
 
 export type ProgramSelection = { functionId: string; nodeId?: string };
@@ -26,6 +30,7 @@ export type ProgramBoardProps = {
   language?: SourceLanguage;
   mode: ChartMode;
   includeComments: boolean;
+  showLoopLabels: boolean;
   loopDepth: number | null;
   loopOverrides: LoopOverrides;
   edits: ChartEdits;
@@ -35,11 +40,13 @@ export type ProgramBoardProps = {
   highlightUnmodified?: boolean;
   positions: Record<string, ProgramPosition>;
   onPositions: (positions: Record<string, ProgramPosition>) => void;
+  onBoxPosition: (functionId:string,node:CanvasNode,position:ProgramPosition)=>void;
   onSelect: (selection: ProgramSelection) => void;
   onClearSelection?: () => void;
+  focusRequest?: number;
   selectedFunctionId?: string;
   selectedNodeId?: string;
-  onExportReady?: (svg: string) => void;
+  onExportReady?: (svg: string, render?: (palette:SvgPalette)=>string) => void;
 };
 
 type Result = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; diagram: ProgramDiagram };
@@ -71,9 +78,9 @@ const nodeTypes = { programGroup: ProgramGroup, flowNode: FlowNodeCard };
 
 export default function ProgramBoard(props: ProgramBoardProps) {
   const {
-    source, functions, language = "cpp", mode, includeComments, loopDepth, loopOverrides, edits, captions,
+    source, functions, language = "cpp", mode, includeComments, showLoopLabels, loopDepth, loopOverrides, edits, captions,
     hiddenBoxes, showHiddenBoxes, highlightUnmodified = false, positions, onPositions, onSelect, onClearSelection,
-    selectedFunctionId, selectedNodeId, onExportReady,
+    selectedFunctionId, selectedNodeId, onExportReady, onBoxPosition, focusRequest,
   } = props;
   const [results, setResults] = useState<Record<string, Result>>({});
   const [references, setReferences] = useState<ProgramReference[]>([]);
@@ -81,12 +88,18 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   const [referenceError, setReferenceError] = useState("");
   const [nodes, setNodes] = useState<BoardNode[]>([]);
   const [paletteVersion, setPaletteVersion] = useState(0);
+  const [dragging, setDragging] = useState(false), [rendering, setRendering] = useState(true);
+  const parsedCache = useRef(new ProgramAnalysisCache<FlowGraph>());
+  const lastParseIdentity = useRef('');
+  const onSelectRef = useRef(onSelect); onSelectRef.current = onSelect;
+  const selectGroup = useCallback((selection: ProgramSelection) => onSelectRef.current(selection), []);
   const analysisGeneration = useRef(0), referenceGeneration = useRef(0);
   const activeAnalyses = useRef(0), analysisWaiters = useRef<Array<() => void>>([]);
   const flow = useRef<ReactFlowInstance<BoardNode> | null>(null), lastFittedMembership = useRef("");
   const members = useMemo(() => functions.map((info) => ({ info, id: programGroupId(info) })), [functions]);
   const membership = useMemo(() => functions.map((info) => info.identity ?? info.id).sort().join("\n"), [functions]);
-  const analysisKey = JSON.stringify([source, functions, language, mode, includeComments, loopDepth, loopOverrides, edits, captions, hiddenBoxes, showHiddenBoxes, highlightUnmodified]);
+  const parseIdentity = JSON.stringify([source, functions, language]);
+  const analysisKey = JSON.stringify([source, functions, language, mode, includeComments, showLoopLabels, loopDepth, loopOverrides, edits, captions, hiddenBoxes, showHiddenBoxes, highlightUnmodified]);
 
   const acquireAnalysisSlot = useCallback(async (): Promise<() => void> => {
     const createRelease = () => {
@@ -119,11 +132,15 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   useEffect(() => {
     const generation = ++analysisGeneration.current;
     onExportReady?.("");
-    setResults(Object.fromEntries(members.map((item) => [item.id, { state: "loading" } satisfies Result])));
+    setRendering(true);
+    if (lastParseIdentity.current !== parseIdentity) {
+      lastParseIdentity.current = parseIdentity;
+      setResults(Object.fromEntries(members.map((item) => [item.id, { state: "loading" } satisfies Result])));
+    }
     let next = 0;
     const analyze = async (item: typeof members[number]): Promise<Result> => {
       try {
-        const parsed = simplifyGraph(await api.analyzeCpp(source, item.info.id, true, language));
+        const parsed = await parsedCache.current.use(parseIdentity, item.info.id, () => api.analyzeCpp(source, item.info.id, true, language).then(simplifyGraph));
         const overview = overviewGraph(parsed, { depth: loopDepth, overrides: loopOverrides[item.info.id] ?? {} });
         const visible = hideGraphNodes(overview, hiddenBoxes[item.info.id] ?? [], showHiddenBoxes);
         const presented = {
@@ -134,8 +151,9 @@ export default function ProgramBoard(props: ProgramBoardProps) {
             return { ...shown, unmodified: mode === "natural" && highlightUnmodified && edits[key]?.[node.id]?.natural === undefined && captions[key]?.[node.id] === undefined };
           }),
         };
-        const labels = new Map(presentLoopEdgeLabels(presented).edges.map((edge) => [edge.id, edge.label]));
-        const laidOut = await layoutGraph(presented, labels);
+        const labels = new Map(presentLoopEdgeLabels(presented,showLoopLabels).edges.map((edge) => [edge.id, edge.label]));
+        const layout = await layoutGraph(presented, labels);
+        const laidOut=positionedCanvas(layout.nodes,layout.edges,labels);
         const edges = laidOut.edges.map((edge) => ({ ...edge, label: labels.get(edge.id) || undefined }));
         const size = programBounds(laidOut.nodes);
         return { state: "ready", diagram: { id: item.id, info: item.info, width: size.width, height: size.height, nodes: laidOut.nodes, edges, position: positions[item.info.id] } };
@@ -156,7 +174,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
         setResults((current) => ({ ...current, [item.id]: result }));
       }
     };
-    void Promise.all(Array.from({ length: Math.min(4, members.length) }, worker));
+    void Promise.all(Array.from({ length: Math.min(4, members.length) }, worker)).then(() => { if (generation === analysisGeneration.current) setRendering(false); });
     return () => { if (analysisGeneration.current === generation) analysisGeneration.current += 1; };
   }, [analysisKey, acquireAnalysisSlot]);
 
@@ -187,18 +205,29 @@ export default function ProgramBoard(props: ProgramBoardProps) {
         const result = results[diagram.id] ?? { state: "loading" };
         const saved = positions[diagram.info.id];
         const position = saved ?? (allSettled ? arranged[diagram.id] : live.get(diagram.id) ?? arranged[diagram.id]);
-        const group: GroupNode = { id: diagram.id, type: "programGroup", position, width: diagram.width, height: diagram.height, style: { width: diagram.width, height: diagram.height }, data: { diagram, state: result.state, onSelect }, selected: selectedFunctionId === diagram.info.id && !selectedNodeId, zIndex: 0 };
+        const group: GroupNode = { id: diagram.id, type: "programGroup", position, width: diagram.width, height: diagram.height, style: { width: diagram.width, height: diagram.height }, data: { diagram, state: result.state, onSelect: selectGroup }, selected: selectedFunctionId === diagram.info.id && !selectedNodeId, zIndex: 0 };
         if (result.state !== "ready") return [group];
         const namespaced = namespaceProgramDiagram(diagram.id, diagram.nodes, diagram.edges);
-        const children = namespaced.nodes.map((node, index): CanvasNode => ({ ...node, position: { x: diagram.nodes[index].position.x + GROUP_PADDING, y: diagram.nodes[index].position.y + HEADER_HEIGHT }, parentId: diagram.id, extent: "parent", draggable: false, selectable: true, selected: selectedFunctionId === diagram.info.id && selectedNodeId === diagram.nodes[index].data.flow.id, zIndex: 2 }));
+        const children = namespaced.nodes.map((node, index): CanvasNode => ({ ...node, position: { x: diagram.nodes[index].position.x + GROUP_PADDING, y: diagram.nodes[index].position.y + HEADER_HEIGHT }, parentId: diagram.id, draggable: true, selectable: true, selected: selectedFunctionId === diagram.info.id && selectedNodeId === diagram.nodes[index].data.flow.id, zIndex: 2 }));
         return [group, ...children];
       });
     });
-  }, [diagrams, results, positions, arranged, allSettled, onSelect, selectedFunctionId, selectedNodeId]);
+  }, [diagrams, results, positions, arranged, allSettled, selectGroup, selectedFunctionId, selectedNodeId]);
 
+  const [guides,setGuides]=useState<AlignmentGuide[]>([]);
+  const liveDiagrams=useMemo(()=>diagrams.map(diagram=>{
+    const children=diagram.nodes.map(node=>{
+      const live=nodes.find(item=>item.id===`${diagram.id}/${node.id}`);
+      if(!live)return node;
+      const position={x:live.position.x-GROUP_PADDING,y:live.position.y-HEADER_HEIGHT};
+      return {...node,data:{...node.data,flow:{...node.data.flow,position}}};
+    });
+    const positioned=positionedCanvas(children,diagram.edges);
+    return {...diagram,nodes:positioned.nodes,edges:positioned.edges,...programBounds(positioned.nodes)};
+  }),[diagrams,nodes]);
   const edges = useMemo<Edge[]>(() => {
     const groupPositions = new Map(nodes.filter((node) => node.type === "programGroup").map((node) => [node.id, node.position]));
-    const inside = diagrams.flatMap((diagram) => {
+    const inside = liveDiagrams.flatMap((diagram) => {
       const offset = groupPositions.get(diagram.id) ?? diagram.position ?? { x: 0, y: 0 };
       return positionProgramEdges(diagram.id, diagram.edges, offset, { x: GROUP_PADDING, y: HEADER_HEIGHT });
     });
@@ -212,7 +241,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
       labelBgStyle: { fill: "var(--panel)", fillOpacity: .94 }, labelBgPadding: [5, 3] as [number, number], zIndex: 3,
     }));
     return [...inside, ...cross];
-  }, [diagrams, calls, nodes]);
+  }, [liveDiagrams, calls, nodes]);
 
   const onNodesChange = useCallback((changes: NodeChange<BoardNode>[]) => setNodes((current) => applyNodeChanges(changes, current)), []);
   const persist = useCallback((_event: MouseEvent | TouchEvent, node: BoardNode) => {
@@ -221,19 +250,40 @@ export default function ProgramBoard(props: ProgramBoardProps) {
     for (const item of nodes) if (item.type === "programGroup") next[item.data.diagram.info.id] = item.id === node.id ? node.position : item.position;
     onPositions(next);
   }, [nodes, positions, onPositions]);
-  const selectNode: NodeMouseHandler<BoardNode> = useCallback((_event, node) => {
-    if (node.type === "programGroup") return;
-    const group = diagrams.find((item) => node.id.startsWith(`${item.id}/`));
-    if (!group) return;
-    if (selectedFunctionId !== group.info.id || selectedNodeId !== node.data.flow.id) {
-      const parent = nodes.find((item) => item.id === group.id && item.type === "programGroup");
-      if (parent && flow.current) {
-        const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        void flow.current.setCenter(parent.position.x + node.position.x + NODE_WIDTH / 2, parent.position.y + node.position.y + nodeHeight(node.data.flow) / 2, { zoom: flow.current.getZoom(), duration: reducedMotion ? 0 : 220 });
-      }
-    }
-    onSelect({ functionId: group.info.id, nodeId: node.data.flow.id });
-  }, [diagrams, nodes, onSelect, selectedFunctionId, selectedNodeId]);
+  const dragBox=(_event:MouseEvent|TouchEvent,node:BoardNode)=>{
+    if(node.type==='programGroup')return;
+    const parent=nodes.find(item=>item.id===node.parentId);if(!parent)return;
+    const siblings=nodes.filter((item):item is CanvasNode=>item.type==='flowNode').map(item=>{
+      const group=nodes.find(group=>group.id===item.parentId);
+      const position={x:item.position.x+(group?.position.x??0),y:item.position.y+(group?.position.y??0)};
+      return {...item,position,data:{...item.data,flow:{...item.data.flow,position}}};
+    });
+    const world={x:parent.position.x+node.position.x,y:parent.position.y+node.position.y};
+    const snapped=snapBoxPosition(siblings,node.id,world,flow.current?.getZoom()??1,'shiftKey' in _event&&_event.shiftKey);
+    const position={x:Math.max(0,snapped.position.x-parent.position.x-GROUP_PADDING),y:Math.max(0,snapped.position.y-parent.position.y-HEADER_HEIGHT)};
+    const relative={x:position.x+GROUP_PADDING,y:position.y+HEADER_HEIGHT};
+    setNodes(current=>current.map(item=>item.id===node.id&&item.type==='flowNode'?{...item,position:relative,data:{...item.data,flow:{...node.data.flow,position}}}:item.id===parent.id&&item.type==='programGroup'?{...item,width:Math.max(item.width??0,relative.x+NODE_WIDTH+GROUP_PADDING),height:Math.max(item.height??0,relative.y+nodeHeight(node.data.flow)+GROUP_PADDING),style:{...item.style,width:Math.max(item.width??0,relative.x+NODE_WIDTH+GROUP_PADDING),height:Math.max(item.height??0,relative.y+nodeHeight(node.data.flow)+GROUP_PADDING)}}:item));
+    setGuides(snapped.guides);return position;
+  };
+  const selectNode: NodeMouseHandler<BoardNode> = (_event,node)=>{
+    if(node.type==='programGroup')return;
+    const group=diagrams.find(item=>item.id===node.parentId);if(group)onSelect({functionId:group.info.id,nodeId:node.data.flow.id});
+  };
+  const lastCentered=useRef('');
+  useEffect(()=>{
+    const key=selectedFunctionId+'\0'+selectedNodeId+'\0'+focusRequest;
+    if(!selectedNodeId){lastCentered.current='';return;}
+    if(key===lastCentered.current)return;
+    const node=nodes.find(item=>item.type==='flowNode'&&item.data.flow.id===selectedNodeId&&item.parentId===`program:${selectedFunctionId}`);
+    const group=nodes.find(item=>item.id===node?.parentId);if(!node||node.type!=='flowNode'||!group)return;
+    const frame=requestAnimationFrame(()=>{
+      const canvas=document.querySelector('.program-board');const instance=flow.current;if(!canvas||!instance)return;
+      lastCentered.current=key;
+      const zoom=instance.getZoom();
+      const point=editorAwareCenter({x:group.position.x+node.position.x+NODE_WIDTH/2,y:group.position.y+node.position.y+nodeHeight(node.data.flow)/2},canvas.getBoundingClientRect(),document.querySelector('.node-editor')?.getBoundingClientRect()??null,zoom);
+      void instance.setCenter(point.x,point.y,{zoom,duration:window.matchMedia('(prefers-reduced-motion: reduce)').matches?0:150});
+    });return()=>cancelAnimationFrame(frame);
+  },[selectedFunctionId,selectedNodeId,nodes,focusRequest]);
 
   useEffect(() => {
     if (!allSettled || !flow.current || lastFittedMembership.current === membership) return;
@@ -243,15 +293,17 @@ export default function ProgramBoard(props: ProgramBoardProps) {
 
   const palette = useMemo(() => { void paletteVersion; return svgPaletteFromCss(); }, [paletteVersion]);
   useEffect(() => {
-    if (!onExportReady || !allSettled || referenceState !== "ready" || diagrams.some((diagram) => diagram.error)) { onExportReady?.(""); return; }
+    if (dragging || rendering || !onExportReady || !allSettled || referenceState !== "ready" || diagrams.some((diagram) => diagram.error)) { onExportReady?.(""); return; }
     const groupPositions = Object.fromEntries(nodes.filter((node) => node.type === "programGroup").map((node) => [node.id, node.position]));
-    onExportReady(composeProgramSvg(diagrams, calls, groupPositions, palette, (chartNodes, chartEdges, colors) => createSvgDocument(chartNodes, chartEdges, mode, colors)));
-  }, [allSettled, referenceState, diagrams, calls, nodes, palette, mode, onExportReady]);
+    const render=(colors:SvgPalette)=>composeProgramSvg(liveDiagrams,calls,groupPositions,colors,(chartNodes,chartEdges,palette)=>createSvgDocument(chartNodes,chartEdges,mode,palette));
+    onExportReady(render(palette),render);
+  }, [dragging, rendering, allSettled, referenceState, liveDiagrams, calls, nodes, palette, mode, onExportReady]);
 
   const ready = Object.values(results).filter((result) => result.state === "ready").length;
   const errors = Object.values(results).filter((result) => result.state === "error").length;
   return <section className={`program-board mode-${mode}`} aria-label="Whole program flowchart">
-    {members.length ? <ReactFlow<BoardNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={(instance) => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeDragStop={persist} onNodeClick={selectNode} onPaneClick={onClearSelection} nodesConnectable={false} nodesDraggable minZoom={.05} maxZoom={1.6} proOptions={{ hideAttribution: true }}>
+    {members.length ? <ReactFlow<BoardNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={(instance) => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeDragStart={()=>setDragging(true)} onNodeDrag={dragBox} onNodeDragStop={(event,node)=>{setDragging(false);if(node.type==='programGroup'){persist(event,node);return;}const position=dragBox(event,node);setGuides([]);const group=diagrams.find(item=>item.id===node.parentId);if(position&&group)onBoxPosition(group.info.id,node,position);}} onNodeClick={selectNode} onPaneClick={onClearSelection} nodesConnectable={false} nodesDraggable minZoom={.05} maxZoom={1.6} proOptions={{ hideAttribution: true }}>
+      <AlignmentGuides guides={guides}/>
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="var(--line)" />
       <Controls showInteractive={false} position="bottom-right" />
       <MiniMap position="bottom-left" pannable zoomable nodeColor={(node) => node.type === "programGroup" ? (isProgramEntry((node as GroupNode).data.diagram.info) ? palette.terminatorStroke : palette.processStroke) : "transparent"} maskColor="color-mix(in srgb, var(--panel) 72%, transparent)" />

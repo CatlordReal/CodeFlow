@@ -57,12 +57,12 @@ jobs:
           args: --bundles nsis
       - name: Launch and capture Windows runtime
         shell: pwsh
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: >-
           ./.github/scripts/windows-smoke.ps1
           -ExecutablePath ./src-tauri/target/release/codeflow.exe
           -ScreenshotPath ./output/windows-smoke.png
-          -TimeoutSeconds 120
+          -TimeoutSeconds 240
       - name: Upload Windows runtime proof
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

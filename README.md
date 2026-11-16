@@ -30,7 +30,17 @@ Choose **C++** or **C#** beside the app name, open a source file or paste code, 
 - Code and natural-language label modes, source comments, annotations, box hiding, removal flags, and highlighting for unchanged natural-language labels.
 - SVG and PNG export using the palette active at export time.
 
-Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects visible paths and retains relevant decision text. **Flag for removal** and **Flag for update** mark separate review states without changing code or deleting boxes. Hide/show preserves the current viewport. Select a loop header to edit its **Looping arrow** and **Exit arrow** text. Clearing either field restores its default.
+Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects visible paths and removes hidden loop return arrows and labels. **Show hidden boxes** sits beside **Comments**. **Flag for removal** and **Flag for update** mark separate review states without changing code or deleting boxes. These flags never appear in exported charts. Hide/show preserves the current viewport. Select a loop header to edit its **Looping arrow** and **Exit arrow** text. Clearing a field restores its default; whitespace-only labels are hidden. **Tools > Loop arrow labels** hides all loop exit text.
+
+## Arrange and navigate
+
+Drag individual boxes in Function or Whole program view. Edges follow moved boxes; alignment guides snap box edges and centres within seven screen pixels. Hold Shift to move freely. Positions are included in saves, recovery, and undo history. Reset a box to restore its automatic position. File map cards remain function previews.
+
+Click code to select its corresponding visible box. Selection centres the box in the clear area left of its editor without changing zoom. Press F11 or use the fullscreen button to toggle fullscreen; the transparency preference remains unchanged.
+
+## Export colours
+
+**Export > Colour scheme** selects a palette just for SVG/PNG output. **Current app** follows the displayed theme. Explicit palettes leave the application theme unchanged. Exported charts retain notes and loop badges, but omit removal and update flags.
 
 ## Projects and recovery
 
@@ -71,6 +81,12 @@ Install and run [Ollama](https://ollama.com/download), then open **Tools > Local
 AI generates caption proposals for process and input/output steps, including collapsed loops. Every proposal starts unaccepted and shows the existing label beside the proposed label. Review and optionally edit each proposal, then accept or decline it individually or use **Accept all** and **Decline all**. Only accepted proposals are applied. If source, chart structure, or displayed labels change during review, pending proposals are invalidated.
 
 Decision tests, terminal paths, and graph structure remain parser-derived. AI captions are optional; ordinary flowcharts work without Ollama.
+
+## Source-change recovery
+
+When source changes, CodeFlow keeps source-specific chart history before remapping labels. Returning to an exact retained source version restores its matching revision annotations, including code temporarily commented out. These snapshots are saved in projects and recovery, scoped to the document and language. Up to ten source versions fit within the project size budget; older snapshot trimming is reported. If the newest snapshot cannot fit safely, remapping stops with an error instead of discarding it.
+
+Text already erased by an older version cannot be recreated without an older saved project or recovery copy.
 
 ## Appearance
 

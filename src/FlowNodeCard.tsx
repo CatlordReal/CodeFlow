@@ -1,6 +1,6 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { NODE_WIDTH, nodeHeight, type CanvasNode } from "./layout";
-import { nodeContentOffset, nodeTextLayout } from "./textLayout";
+import { LOOP_BADGE_HEIGHT, LOOP_BADGE_WIDTH, LOOP_ICON_PATH, loopBadgeTop, nodeContentOffset, nodeTextLayout } from "./textLayout";
 import { flowShape } from "./simplify";
 import "./flowchart.css";
 
@@ -22,7 +22,7 @@ export default function FlowNodeCard({ data, selected }: NodeProps<CanvasNode>) 
     <div data-kind={flow.kind} data-loop={isLoop || undefined} data-flagged={visual.flagged || undefined} data-flagged-for-update={visual.flaggedForUpdate || undefined} data-unmodified={visual.unmodified || undefined} data-hidden={flow.hidden || undefined} className={`flow-symbol flow-symbol--${shape} ${selected ? "is-selected" : ""}`} style={{ width: NODE_WIDTH, height }} title={`Line ${flow.line}${flow.original_label ? ` · ${flow.original_label}` : ""}${visual.flagged ? " · Flagged for removal" : ""}${visual.flaggedForUpdate ? " · Flagged for update" : ""}${visual.unmodified ? " · Unmodified label" : ""}`}>
       <svg className="flow-symbol__outline" viewBox={`0 0 ${NODE_WIDTH} ${height}`} aria-hidden="true">{outline}</svg>
       {shape === "subprocess" && <svg className="flow-symbol__outline flow-symbol__subprocess" viewBox={`0 0 ${NODE_WIDTH} ${height}`} aria-hidden="true"><path d={`M 12 1 V ${height - 1} M ${NODE_WIDTH - 12} 1 V ${height - 1}`} /></svg>}
-      {isLoop && <span className="flow-symbol__loop-marker">Loop</span>}
+      {isLoop && <span className="flow-symbol__loop-marker" style={{ top: loopBadgeTop(flow), width: LOOP_BADGE_WIDTH, height: LOOP_BADGE_HEIGHT }}><svg viewBox="0 0 10 10" aria-hidden="true"><path d={LOOP_ICON_PATH} /></svg>Loop</span>}
       {(visual.flagged || visual.flaggedForUpdate) && <span className="flow-symbol__flags">
         {visual.flaggedForUpdate && <span className="flow-symbol__flag-marker flow-symbol__flag-marker--update" aria-label="Flagged for update" title="Flagged for update">Update</span>}
         {visual.flagged && <span className="flow-symbol__flag-marker" aria-label="Flagged for removal" title="Flagged for removal">Flag</span>}

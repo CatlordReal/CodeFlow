@@ -6,6 +6,8 @@ export type FunctionInfo = {
   line: number;
   identity?: string;
   qualified_name?: string;
+  start_byte?: number;
+  end_byte?: number;
 };
 
 export type FlowNode = {
@@ -22,6 +24,7 @@ export type FlowNode = {
   header_identity?: string | null;
   loop_condition?: string | null;
   original_label?: string;
+  position?: {x:number;y:number};
   annotation?: string;
   hidden?: boolean;
   flagged?: boolean;

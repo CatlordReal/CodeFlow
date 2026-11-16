@@ -16,6 +16,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as api from "./api";
 import { createSvgDocument, svgPaletteFromCss, type SvgPalette } from "./exportSvg";
+import { positionedCanvas } from './boxGeometry';
 import { layoutGraph, type CanvasEdge, type CanvasNode } from "./layout";
 import {
   hideGraphNodes,
@@ -39,6 +40,7 @@ export type FunctionBoardProps = {
   functions: FunctionInfo[];
   mode: ChartMode;
   includeComments: boolean;
+  showLoopLabels: boolean;
   highlightUnmodified?:boolean;
   loopDepth: number | null;
   loopOverrides: LoopOverrides;
@@ -49,7 +51,7 @@ export type FunctionBoardProps = {
   positions: Record<string, FunctionPosition>;
   onPositions: (positions: Record<string, FunctionPosition>) => void;
   onOpenFunction: (id: string) => void;
-  onExportReady?: (svg: string) => void;
+  onExportReady?: (svg: string, render?: (palette:SvgPalette)=>string) => void;
 };
 
 type FunctionReference = { source: string; target: string; label: string };
@@ -113,7 +115,7 @@ const nodeTypes = { functionCard: FunctionCard };
 
 export default function FunctionBoard(props: FunctionBoardProps) {
   const {
-    source, language = "cpp", functions, mode, includeComments, highlightUnmodified, loopDepth, loopOverrides, edits, captions,
+    source, language = "cpp", functions, mode, includeComments, showLoopLabels, highlightUnmodified, loopDepth, loopOverrides, edits, captions,
     hiddenBoxes, showHiddenBoxes, positions, onPositions, onOpenFunction, onExportReady,
   } = props;
   const [results, setResults] = useState<Record<string, FunctionResult>>({});
@@ -173,8 +175,9 @@ export default function FunctionBoard(props: FunctionBoardProps) {
             return {...presented,unmodified:mode==='natural'&&highlightUnmodified&&edits[key]?.[node.id]?.natural===undefined&&captions[key]?.[node.id]===undefined};
           }),
         };
-        const labels = new Map(presentLoopEdgeLabels(presented).edges.map((edge) => [edge.id, edge.label]));
-        const laidOut = await layoutGraph(presented, labels);
+        const labels = new Map(presentLoopEdgeLabels(presented,showLoopLabels).edges.map((edge) => [edge.id, edge.label]));
+        const layout = await layoutGraph(presented, labels);
+        const laidOut=positionedCanvas(layout.nodes,layout.edges,labels);
         const edges = laidOut.edges.map((edge) => ({ ...edge, label: labels.get(edge.id) || undefined }));
         return { state: "ready", nodes: laidOut.nodes, edges, diagnostics: presented.diagnostics };
       } catch (cause) {
@@ -203,7 +206,7 @@ export default function FunctionBoard(props: FunctionBoardProps) {
     };
     void Promise.all(Array.from({ length: Math.min(4, functions.length) }, () => worker()));
     return () => { if (analysisGeneration.current === generation) analysisGeneration.current += 1; };
-  }, [source, language, functions, mode, includeComments, highlightUnmodified, loopDepth, loopOverrides, edits, captions, hiddenBoxes, showHiddenBoxes,highlightUnmodified, acquireAnalysisSlot]);
+  }, [source, language, functions, mode, includeComments, showLoopLabels, highlightUnmodified, loopDepth, loopOverrides, edits, captions, hiddenBoxes, showHiddenBoxes,highlightUnmodified, acquireAnalysisSlot]);
 
   useEffect(() => {
     const generation = ++referenceGeneration.current;
@@ -280,9 +283,13 @@ export default function FunctionBoard(props: FunctionBoardProps) {
 
   useEffect(() => {
     if (!onExportReady) return;
-    const timer = window.setTimeout(() => onExportReady(composeBoardSvg(boardNodes, boardEdges, palette)), 40);
+    const render=(colors:SvgPalette)=>composeBoardSvg(boardNodes.map(node=>{
+      const result=results[node.data.info.id];
+      return result?.state==='ready'?{...node,data:{...node.data,svg:createSvgDocument(result.nodes,result.edges,mode,colors)}}:node;
+    }),boardEdges,colors);
+    const timer = window.setTimeout(() => onExportReady(render(palette),render), 40);
     return () => window.clearTimeout(timer);
-  }, [boardNodes, boardEdges, palette, onExportReady]);
+  }, [boardNodes, boardEdges, palette, onExportReady, results, mode]);
 
   const readyCount = Object.values(results).filter((result) => result.state === "ready").length;
   const errorCount = Object.values(results).filter((result) => result.state === "error").length;
@@ -376,7 +383,7 @@ function composeBoardSvg(nodes: FunctionCardNode[], edges: Edge[], palette: SvgP
     const self=source.id===target.id;
     const labelX=self?sourceX+26:(sourceX+targetX)/2,labelY=self?(sourceY+targetY)/2:(sourceY+targetY)/2-7;
     const shownLabel=self&&label.length>32?label.slice(0,29)+'…':label;
-    return [`<path d="${path}" fill="none" stroke="${escapeXml(palette.edge)}" stroke-width="1.5" stroke-dasharray="7 6" marker-end="url(#board-arrow)"/>${label ? `<text x="${labelX}" y="${labelY}" ${self?`transform="rotate(90 ${labelX} ${labelY})"`:""} text-anchor="middle" class="call-label"><title>${escapeXml(label)}</title>${escapeXml(shownLabel)}</text>` : ""}`];
+    return [`<path d="${path}" fill="none" stroke="${escapeXml(palette.edge)}" stroke-width="1.5" stroke-dasharray="7 6" marker-end="url(#board-arrow)"/>${label.trim() ? `<g class="cf-board-call-label" ${self?`transform="rotate(90 ${labelX} ${labelY})`:""}><title>${escapeXml(label)}</title><text x="${labelX}" y="${labelY}" text-anchor="middle" aria-hidden="true" class="cf-board-call-halo">${escapeXml(shownLabel)}</text><text x="${labelX}" y="${labelY}" text-anchor="middle" class="cf-board-call-text">${escapeXml(shownLabel)}</text></g>` : ""}`];
   }).join("");
   const cards = nodes.map((node, index) => {
     const { info, svg, status, error } = node.data;
@@ -385,7 +392,7 @@ function composeBoardSvg(nodes: FunctionCardNode[], edges: Edge[], palette: SvgP
     const nested = status === "ready" ? nestedSvg(svg, x + 12, y + 58, CARD_WIDTH - 24, CARD_HEIGHT - 76, `chart-arrow-${index}`) : `<text x="${x + CARD_WIDTH / 2}" y="${y + CARD_HEIGHT / 2}" text-anchor="middle" class="error">${escapeXml(error ?? "Analyzing…")}</text>`;
     return `<g><rect x="${x}" y="${y}" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" rx="14" fill="${escapeXml(palette.edgeLabelBackground)}" stroke="${escapeXml(palette.processStroke)}" stroke-width="1.4"/><path d="M ${x} ${y + 48} H ${x + CARD_WIDTH}" stroke="${escapeXml(palette.processStroke)}" stroke-opacity=".55"/><text x="${x + 15}" y="${y + 22}" class="title">${escapeXml(info.name)}</text><text x="${x + 15}" y="${y + 38}" class="line">Line ${info.line}</text>${nested}</g>`;
   }).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${maxX - minX}" height="${maxY - minY}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs><marker id="board-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="${escapeXml(palette.edge)}"/></marker><style>.title{font:700 13px system-ui;fill:${escapeXml(palette.text)}}.line,.error{font:11px system-ui;fill:${escapeXml(palette.muted)}}.call-label{font:650 10px system-ui;fill:${escapeXml(palette.text)};paint-order:stroke;stroke:${escapeXml(palette.background)};stroke-width:5px}</style></defs><rect x="${minX}" y="${minY}" width="${maxX - minX}" height="${maxY - minY}" fill="${escapeXml(palette.background)}"/>${edgeMarkup}${cards}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${maxX - minX}" height="${maxY - minY}" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}"><defs><marker id="board-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="${escapeXml(palette.edge)}"/></marker><style>.title{font:700 13px system-ui;fill:${escapeXml(palette.text)}}.line,.error{font:11px system-ui;fill:${escapeXml(palette.muted)}}.cf-board-call-label{font:650 10px system-ui,sans-serif}.cf-board-call-halo{fill:none;stroke:${escapeXml(palette.background)};stroke-width:5px;stroke-linejoin:round}.cf-board-call-text{fill:${escapeXml(palette.text)};stroke:none}</style></defs><rect x="${minX}" y="${minY}" width="${maxX - minX}" height="${maxY - minY}" fill="${escapeXml(palette.background)}"/>${edgeMarkup}${cards}</svg>`;
 }
 
 function nestedSvg(svg: string, x: number, y: number, width: number, height: number, arrowId: string): string {

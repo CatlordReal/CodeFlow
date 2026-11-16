@@ -4,6 +4,8 @@ import {
   Controls,
   MiniMap,
   ReactFlow,
+  applyNodeChanges,
+  type NodeChange,
   type Edge,
   type NodeMouseHandler,
   type ReactFlowInstance,
@@ -12,25 +14,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
 import { analyzeCpp, inspectCpp, openDocument, openRecentProject, recentProjects, readRecovery, saveRecovery, saveDocument, saveProjectDocument, type RecentProject } from "./api";
 import FlowNodeCard from "./FlowNodeCard";
-import { createPngDataUrl, createSvgDocument, svgPaletteFromCss, svgDocumentName } from "./exportSvg";
-import { edgeTypes, layoutGraph, type CanvasNode } from "./layout";
+import { createPngDataUrl, createSvgDocument, svgPaletteFromCss, svgPaletteFromTheme, type SvgPalette, svgDocumentName } from "./exportSvg";
+import { edgeTypes, layoutGraph, type CanvasNode, type CanvasEdge } from "./layout";
 import { formatUpdaterError } from "./update";
 import AppToolbar from "./AppToolbar";
 import ChartTools from "./ChartTools";
 import ProgramBoard from "./ProgramBoard";
 import LocalAI from "./LocalAI";
 import { analyzeLoops, overviewGraph, simplifyGraph } from "./simplify";
-import { hideGraphNodes, nodePresentationKey, presentGraph, presentLoopEdgeLabels, readProject, type ChartMode, type ChartEdits, type CaptionSets, type LoopOverrides, type Project } from "./presentation";
+import { hideGraphNodes, nodePresentationKey, presentGraph, presentLoopEdgeLabels, readProject, type ChartMode, type ChartEdits, type CaptionSets, type LoopOverrides, type Project, type SourceHistoryArchive } from "./presentation";
 import "./editing.css";
 import {defaultChartState,useChartHistory} from "./history";
 import HistoryPanel from "./HistoryPanel";
 import FunctionBoard from "./FunctionBoard";
-import {mapFunction,matchFunctions,remapChart,remapChartForLanguage,type FunctionMapping} from './preservation';
+import {mapFunction,matchFunctions,remapChart,remapChartForLanguage,restoreArchivedHistory,retainSourceHistory,type FunctionMapping} from './preservation';
 import type {ChartState} from './history';
 import { SAMPLE_CPP } from "./sample";
 import type { FlowGraph, FunctionInfo, SourceLanguage, ChartView } from "./types";
 import { createDesktopCloseHandler } from "./close";
-import { functionViewportFitKey } from "./viewport";
+import { editorAwareCenter, functionViewportFitKey } from "./viewport";
+
+import AlignmentGuides from './AlignmentGuides';
+import { positionedCanvas, snapBoxPosition, type AlignmentGuide } from './boxGeometry';
+import { THEMES, type ThemeId } from './themes';
+import { functionAtByte, nodeAtByte } from './sourceNavigation';
 
 const nodeTypes = { flowNode: FlowNodeCard };
 
@@ -62,7 +69,9 @@ export default function App() {
   const [selectedFunction, setSelectedFunction] = useState("");
   const [inspectedSource, setInspectedSource] = useState("");
   const [includeComments, setIncludeComments] = useState(false);
-  const {state:chart,history,change,load:loadHistory,select:selectRevision,reset:resetChart,alternate:createAlternate,remap:remapHistory,markSaved}=useChartHistory();
+  const [showLoopLabels,setShowLoopLabels]=useState(true);
+  const [exportTheme,setExportTheme]=useState<ThemeId | 'current'>('current');
+  const {state:chart,history,change,load:loadHistory,select:selectRevision,reset:resetChart,alternate:createAlternate,remap:remapHistory,transformHistory,markSaved}=useChartHistory();
   const {loopDepth,loopOverrides,mode,edits,captions,hiddenBoxes,showHiddenBoxes,functionPositions}=chart;
   const expandLoops=loopDepth===null;
   const setLoopDepth=(value:number|null)=>change('loopDepth',value,'Loop depth');
@@ -76,6 +85,9 @@ export default function App() {
   const fileView=chartView==='file', boardView=chartView!=='function';
   const [highlightUnmodified,setHighlightUnmodified]=useState(false);
   const [boardSvg,setBoardSvg]=useState('');
+  const boardRenderer=useRef<((palette:SvgPalette)=>string)|null>(null);
+  const onBoardExport=useCallback((svg:string,render?: (palette:SvgPalette)=>string)=>{boardRenderer.current=render??null;setBoardSvg(svg);},[]);
+  const sourceHistory=useRef<SourceHistoryArchive[]>([]);
   const baseline=useRef<{source:string;language:SourceLanguage;functions:FunctionInfo[];session:number}|null>(null);
   const labelLibrary=useRef<{source:string;language:SourceLanguage;functions:FunctionInfo[];state:ChartState}[]>([]);
   const chartRef=useRef(chart);chartRef.current=chart;
@@ -90,6 +102,7 @@ export default function App() {
   const [sourceScrollTop,setSourceScrollTop]=useState(0);
   const [transparency,setTransparency]=useState(()=>{try{return Math.min(80,Math.max(0,Number(localStorage.getItem('codeflow.transparency'))||0));}catch{return 0;}});
   const [selectedNodeId, setSelectedNodeId] = useState('');
+  const selectedNodeRef=useRef(selectedNodeId);selectedNodeRef.current=selectedNodeId;
   const [showAI, setShowAI] = useState(false);
   const [projectDirty, setProjectDirty] = useState(false);
   const layoutRequest = useRef(0);
@@ -98,7 +111,11 @@ export default function App() {
   const openRequest = useRef(0);
   const [graph, setGraph] = useState<FlowGraph>({ nodes: [], edges: [], diagnostics: [] });
   const [canvasNodes, setCanvasNodes] = useState<CanvasNode[]>([]);
-  const [canvasEdges, setCanvasEdges] = useState<Edge[]>([]);
+  const [canvasEdges, setCanvasEdges] = useState<CanvasEdge[]>([]);
+  const [alignmentGuides,setAlignmentGuides]=useState<AlignmentGuide[]>([]);
+  const liveCanvas=useRef({nodes:canvasNodes,edges:canvasEdges});liveCanvas.current={nodes:canvasNodes,edges:canvasEdges};
+  const [sourceFocusRequest,setSourceFocusRequest]=useState(0);
+  const pendingCode=useRef<{source:string;functionId?:string;byte:number}|null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState("");
@@ -122,17 +139,17 @@ export default function App() {
   const replaceSource=useCallback((text:string)=>{inspectRequest.current++;analyzeRequest.current++;layoutRequest.current++;sourceRef.current=text;setSource(text);},[]);
   const isDesktop = "__TAURI_INTERNALS__" in window;
   sourceRef.current = source;dirtyRef.current=isDirty||projectDirty;sourceDirtyRef.current=isDirty;projectDirtyRef.current=projectDirty;recoveryReadyRef.current=recoveryReady;
-  const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
-  projectRef.current = {format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,labelSource:baseline.current?.session===documentSession.current?baseline.current.source:source};
+  const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,showLoopLabels,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
+  projectRef.current = {format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,showLoopLabels,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,sourceHistory:sourceHistory.current,labelSource:baseline.current?.session===documentSession.current?baseline.current.source:source};
   useEffect(()=>{document.documentElement.style.setProperty('--surface-opacity',`${100-transparency}%`);try{localStorage.setItem('codeflow.transparency',String(transparency));}catch{}},[transparency]);
   useEffect(()=>{if(documentStatus.kind!=='success')return;const timer=window.setTimeout(()=>setDocumentStatus({kind:'idle',message:''}),3000);return()=>clearTimeout(timer);},[documentStatus]);
   useEffect(()=>{void recentProjects().then(setRecent).catch(()=>undefined);},[]);
   useEffect(()=>{let active=true;const session=documentSession.current;void readRecovery().then(opened=>{
     if(!active||!opened||documentSession.current!==session)return;const project=readProject(opened.contents);return inspectCpp(project.labelSource??project.source,project.language).then(savedFunctions=>{if(!active||documentSession.current!==session)return;baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session};projectToken.current=opened.projectToken??null;
-    replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);
+    replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);setShowLoopLabels(project.showLoopLabels??true);sourceHistory.current=project.sourceHistory??[];
     loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions},project.history);setIsDirty(opened.sourceDirty??opened.dirty??true);setProjectDirty(opened.projectDirty??opened.dirty??true);});
   }).catch(cause=>{if(active){recoveryError.current=false;setDocumentStatus({kind:'error',message:`Recovery could not be opened: ${readError(cause)}`});}}).finally(()=>{if(active)setRecoveryReady(true);});return()=>{active=false;};},[loadHistory]);
-  useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{void saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,isDirty,projectDirty,recoveryReady,language,chartView]);
+  useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{void saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,showLoopLabels,isDirty,projectDirty,recoveryReady,language,chartView]);
 
   useEffect(() => {
     if(isDesktop) return;
@@ -164,13 +181,14 @@ export default function App() {
     setIsInspecting(true);
     setInspectedSource("");
     const timer = window.setTimeout(async () => {
+      let sourceHistoryTrimmed=0;
       try {
         const found = await inspectCpp(source,language);
         if (request !== inspectRequest.current || sourceRef.current!==source || documentSession.current!==session) return;
         const previous=baseline.current;
         const sameDocument=previous?.session===documentSession.current;
         let selectedMatch:string|undefined;
-        if(found.length && previous && previous.source!==source && sameDocument){
+        if(found.length && previous && previous.source!==source && sameDocument && previous.language===language){
           const oldState=chartRef.current;
           const pairs=matchFunctions(previous.functions,found);
           const mappings:FunctionMapping[]=[];
@@ -186,7 +204,15 @@ export default function App() {
           if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
           if(valid){
             labelLibrary.current=[{...previous,state:oldState},...labelLibrary.current].slice(0,10);
-            remapHistory(state=>remapChartForLanguage(state,mappings,language));
+            const returned=sourceHistory.current.find(item=>item.source===source&&item.language===language);
+            if(projectRef.current.history?.revisions.some(revision=>['edits','captions','loopOverrides','hiddenBoxes','functionPositions'].some(field=>Object.keys(revision.state[field as 'edits']).length))){
+              const retained=retainSourceHistory(projectRef.current,{source:previous.source,language,history:projectRef.current.history});
+              sourceHistory.current=retained.archives;sourceHistoryTrimmed=retained.trimmed;
+            }
+            transformHistory(current=>{
+              const mapped={...current,revisions:current.revisions.map(revision=>({...revision,state:remapChartForLanguage(revision.state,mappings,language)}))};
+              return returned?restoreArchivedHistory(mapped,returned,source,language):mapped;
+            });
             selectedMatch=pairs.find(([oldFunction])=>oldFunction.id===selectedFunction)?.[1].id;
           }else{
             // Keep last valid identities while incomplete typing cannot be analyzed.
@@ -205,7 +231,7 @@ export default function App() {
               labelLibrary.current.push({source:savedSource,language,functions:savedFunctions,state:{mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions}});
             }catch{/* A missing recent project must not block editing. */}
           }
-          const candidates=labelLibrary.current.filter(candidate=>candidate.language===language);
+          const candidates=labelLibrary.current.filter(candidate=>candidate.language===language&&candidate.source!==source);
           for(const candidate of candidates){
             const pairs=matchFunctions(candidate.functions,found).filter(([item])=>Object.keys(candidate.state.edits).some(key=>key.startsWith(item.id+':'))||Object.keys(candidate.state.captions).some(key=>key.startsWith(item.id+':')));if(!pairs.length)continue;
             try{
@@ -214,7 +240,7 @@ export default function App() {
               if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
               const reused=remapChart(candidate.state,mappings);
               if(!Object.keys(reused.edits).length&&!Object.keys(reused.captions).length)continue;
-              remapHistory(state=>({...state,edits:mergeNodeRecords(reused.edits,state.edits),captions:mergeNodeRecords(reused.captions,state.captions)}));
+              transformHistory(current=>({...current,revisions:current.revisions.map(revision=>revision.id===current.active?{...revision,state:{...revision.state,edits:mergeNodeRecords(reused.edits,revision.state.edits),captions:mergeNodeRecords(reused.captions,revision.state.captions)}}:revision)}));
               if(Object.keys(reused.edits).length||Object.keys(reused.captions).length)setDocumentStatus({kind:'success',message:'Matching code labels restored.'});
             }catch{/* Try the next saved version if this code is incomplete. */}
           }
@@ -226,6 +252,7 @@ export default function App() {
         else setSelectedFunction((current) => found.some((item) => item.id === current) ? current : (found[0]?.id ?? ""));
         setInspectedSource(source);
         setError("");
+        if(sourceHistoryTrimmed)setDocumentStatus({kind:'info',message:'Older source snapshots trimmed to keep recovery within size limits.'});
       } catch (cause) {
         if (request !== inspectRequest.current || sourceRef.current!==source || documentSession.current!==session) return;
         setFunctions([]);
@@ -282,14 +309,16 @@ export default function App() {
   useEffect(() => {
     const request = ++layoutRequest.current;
     if (!displayedGraph.nodes.length) { setCanvasNodes([]); setCanvasEdges([]); return; }
-    const labels=new Map(presentLoopEdgeLabels(displayedGraph).edges.map(edge=>[edge.id,edge.label]));
-    void layoutGraph(displayedGraph,labels).then(result => {
+    const labels=new Map(presentLoopEdgeLabels(displayedGraph,showLoopLabels).edges.map(edge=>[edge.id,edge.label]));
+    void layoutGraph(displayedGraph,labels).then(layout => {
+      const result=positionedCanvas(layout.nodes,layout.edges,labels);
       if (request !== layoutRequest.current) return;
-      setCanvasNodes(result.nodes); setCanvasEdges(result.edges.map(edge=>({...edge,label:labels.get(edge.id)??edge.label})));
+      setCanvasNodes(result.nodes.map(node=>({...node,selected:node.id===selectedNodeRef.current}))); setCanvasEdges(result.edges.map(edge=>({...edge,label:labels.get(edge.id)??edge.label})));
       if(lastFitKey.current!==fitKey){lastFitKey.current=fitKey;window.setTimeout(()=>void flowRef.current?.fitView({padding:0.12,duration:0}),60);}
     }).catch(cause => { if(request===layoutRequest.current) setError(readError(cause)); });
     return () => { layoutRequest.current++; };
-  }, [displayedGraph,fitKey]);
+  }, [displayedGraph,fitKey,showLoopLabels]);
+  useEffect(()=>setCanvasNodes(nodes=>nodes.map(node=>({...node,selected:node.id===selectedNodeId}))),[selectedNodeId]);
   const selectedNode = displayedGraph.nodes.find(node => node.id === selectedNodeId);
   const graphKey = source + '\0' + selectedFunction + '\0' + JSON.stringify([loopDepth,loopOverrides[selectedFunction] ?? {},hiddenBoxes[selectedFunction]??[],showHiddenBoxes]);
   const editKey = selectedNode ? nodePresentationKey(selectedFunction,selectedNode,loopDepth) : selectedFunction + ':overview';
@@ -327,7 +356,7 @@ export default function App() {
   const newProject=async()=>{
     if((isDirty||projectDirty)&&!await confirmReplace('Start a new project? Save unsaved work first.'))return;
     if(baseline.current)labelLibrary.current=[{...baseline.current,state:chartRef.current},...labelLibrary.current].slice(0,10);
-    documentSession.current++;openRequest.current++;saveRequest.current++;projectToken.current=null;recoveryError.current=false;
+    sourceHistory.current=[];documentSession.current++;openRequest.current++;saveRequest.current++;projectToken.current=null;recoveryError.current=false;
     replaceSource('');setFileName(language==='cpp'?'untitled.cpp':'untitled.cs');setChartView('function');loadHistory(defaultChartState());setIsDirty(false);setProjectDirty(false);setSelectedNodeId('');setSelectedLine(null);setDocumentStatus({kind:'idle',message:''});
   };
 
@@ -345,7 +374,7 @@ export default function App() {
       const contents = await file.text();
       if(request !== openRequest.current || session !== documentSession.current) return;
       const now = projectRef.current;
-      if(before.language!==now.language || before.view!==now.view || before.source!==now.source || before.fileName!==now.fileName || before.edits!==now.edits || before.captions!==now.captions || before.mode!==now.mode || before.loopDepth!==now.loopDepth || before.loopOverrides!==now.loopOverrides || before.hiddenBoxes!==now.hiddenBoxes || before.showHiddenBoxes!==now.showHiddenBoxes || before.functionPositions!==now.functionPositions || before.history!==now.history || before.includeComments!==now.includeComments) {
+      if(before.language!==now.language || before.view!==now.view || before.source!==now.source || before.fileName!==now.fileName || before.edits!==now.edits || before.captions!==now.captions || before.mode!==now.mode || before.loopDepth!==now.loopDepth || before.loopOverrides!==now.loopOverrides || before.hiddenBoxes!==now.hiddenBoxes || before.showHiddenBoxes!==now.showHiddenBoxes || before.functionPositions!==now.functionPositions || before.history!==now.history || before.includeComments!==now.includeComments || before.showLoopLabels!==now.showLoopLabels) {
         setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'}); return;
       }
       inspectRequest.current++;analyzeRequest.current++;
@@ -354,11 +383,11 @@ export default function App() {
         const project = readProject(contents);
         const savedFunctions=await inspectCpp(project.labelSource??project.source,project.language);if(request!==openRequest.current||JSON.stringify(projectRef.current)!==JSON.stringify(before))return;
         baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session:documentSession.current+1};
-        replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);
+        replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);setShowLoopLabels(project.showLoopLabels??true);sourceHistory.current=project.sourceHistory??[];
         loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions},project.history);
       } else {
         if(new TextEncoder().encode(contents).length > 2 * 1024 * 1024) throw new Error('Source must be smaller than 2 MB.');
-        replaceSource(contents);setFileName(file.name);setLanguage(/\.cs$/i.test(file.name)?'csharp':'cpp');setChartView('function');loadHistory(defaultChartState());baseline.current=null;
+        sourceHistory.current=[];replaceSource(contents);setFileName(file.name);setLanguage(/\.cs$/i.test(file.name)?'csharp':'cpp');setChartView('function');loadHistory(defaultChartState());baseline.current=null;
       }
       documentSession.current++;projectToken.current=token;recoveryError.current=false;
       setProjectDirty(false); setSelectedNodeId('');
@@ -543,9 +572,51 @@ export default function App() {
   }, [source]);
 
   const onNodeClick: NodeMouseHandler<CanvasNode> = useCallback((_event,node)=>{
-    if(node.id!==selectedNodeId){const flow=flowRef.current;if(flow){const zoom=flow.getZoom();void flow.setCenter(node.position.x+(node.width??288)/2,node.position.y+(node.height??80)/2,{zoom,duration:150});}}
     setSelectedNodeId(node.id);revealNode(node);
-  },[revealNode,selectedNodeId]);
+  },[revealNode]);
+  const lastCentered=useRef('');
+  useEffect(()=>{
+    if(chartView!=='function'||!selectedNodeId){lastCentered.current='';return;}
+    const key=selectedFunction+'\0'+selectedNodeId+'\0'+sourceFocusRequest;
+    const node=canvasNodes.find(item=>item.id===selectedNodeId);
+    if(!node||lastCentered.current===key)return;
+    const frame=requestAnimationFrame(()=>{
+      const instance=flowRef.current,canvas=document.querySelector('.chart-canvas');
+      if(!instance||!canvas)return;
+      lastCentered.current=key;
+      const zoom=instance.getZoom();
+      const point=editorAwareCenter({x:node.position.x+(node.width??288)/2,y:node.position.y+(node.height??80)/2},canvas.getBoundingClientRect(),document.querySelector('.node-editor')?.getBoundingClientRect()??null,zoom);
+      void instance.setCenter(point.x,point.y,{zoom,duration:window.matchMedia('(prefers-reduced-motion: reduce)').matches?0:150});
+    });return()=>cancelAnimationFrame(frame);
+  },[chartView,selectedFunction,selectedNodeId,canvasNodes,sourceFocusRequest]);
+  const moveBox=(event:MouseEvent|TouchEvent,node:CanvasNode)=>{
+    const current=liveCanvas.current;
+    const snapped=snapBoxPosition(current.nodes,node.id,node.position,flowRef.current?.getZoom()??1,'shiftKey' in event&&event.shiftKey);
+    const moved=current.nodes.map(item=>item.id===node.id?{...item,position:snapped.position,dragging:true,data:{...item.data,flow:{...item.data.flow,position:snapped.position}}}:item);
+    const next=positionedCanvas(moved,current.edges,new Map(),new Set([node.id]));
+    liveCanvas.current=next;setCanvasNodes(next.nodes);setCanvasEdges(next.edges);setAlignmentGuides(snapped.guides);
+    return snapped.position;
+  };
+  const saveBoxPosition=(functionId:string,node:CanvasNode,position:{x:number;y:number})=>{
+    const key=nodePresentationKey(functionId,node.data.flow,loopDepth);
+    change('edits',current=>({...current,[key]:{...current[key],[node.data.flow.id]:{...current[key]?.[node.data.flow.id],position}}}),'Move box');setProjectDirty(true);
+  };
+  const clickCode=(editor:HTMLTextAreaElement)=>{
+    if(editor.selectionStart!==editor.selectionEnd)return;
+    const byte=new TextEncoder().encode(source.slice(0,editor.selectionStart)).length;
+    pendingCode.current={source,byte};setSourceFocusRequest(value=>value+1);
+  };
+  useEffect(()=>{
+    const pending=pendingCode.current;if(!pending)return;
+    if(pending.source!==source){pendingCode.current=null;return;}
+    if(inspectedSource!==source)return;
+    const info=functionAtByte(functions,pending.byte);if(!info){pendingCode.current=null;return;}
+    if(fileView)setChartView('function');
+    if(selectedFunction!==info.id){setSelectedFunction(info.id);return;}
+    if(graphSource!==source||graphFunction!==info.id)return;
+    const node=nodeAtByte(displayedGraph.nodes,pending.byte);pendingCode.current=null;
+    if(node){setSelectedNodeId(node.id);setSelectedLine(node.line);}
+  },[source,sourceFocusRequest,functions,inspectedSource,graphSource,graphFunction,selectedFunction,displayedGraph,fileView]);
   const lastProgramSelection=useRef('');
   useEffect(()=>{
     if(chartView!=='program'||!selectedNodeId){lastProgramSelection.current='';return;}
@@ -558,7 +629,9 @@ export default function App() {
   const highlightLines=selectedNode?Math.max(1,source.slice(byteToStringIndex(source,selectedNode.start_byte),byteToStringIndex(source,selectedNode.end_byte)).split('\n').length):0;
 
   const exportGraph = useCallback(async (format:'svg'|'png'='svg') => {
-    const svg = boardView ? boardSvg : createSvgDocument(canvasNodes, canvasEdges, mode,svgPaletteFromCss());
+    const theme=THEMES.find(theme=>theme.id===exportTheme);
+    const palette=theme?svgPaletteFromTheme(theme):svgPaletteFromCss();
+    const svg = boardView ? (boardRenderer.current?.(palette)??boardSvg) : createSvgDocument(canvasNodes, canvasEdges, mode,palette);
     if (!svg) return;
     try {
       const saved = await saveDocument(svgDocumentName(selectedName),format==='png'?await createPngDataUrl(svg):svg,format);
@@ -568,7 +641,7 @@ export default function App() {
     } catch (cause) {
       setDocumentStatus({ kind: "error", message: `Export failed: ${readError(cause)}` });
     }
-  }, [canvasNodes, canvasEdges, selectedName, mode,boardView,boardSvg]);
+  }, [canvasNodes, canvasEdges, selectedName, mode,boardView,boardSvg,exportTheme]);
 
   const statusText = error
     ? error
@@ -591,7 +664,8 @@ export default function App() {
         onSaveSource={()=>void saveSource()} onSaveProject={()=>void saveProject()} onSaveAs={()=>void saveProject(true)}
         onAnalyze={()=>setRefreshKey(value=>value+1)} onExportSvg={()=>void exportGraph()} onExportPng={()=>void exportGraph('png')}
         onCheckUpdates={()=>void checkForUpdates()} transparency={transparency} onTransparencyChange={setTransparency}
-        recoveryReady={recoveryReady} exportReady={boardView?!!boardSvg:canvasNodes.length>0}
+        onFullscreenError={message=>setDocumentStatus({kind:'error',message})} exportTheme={exportTheme} onExportThemeChange={setExportTheme}
+        recoveryReady={recoveryReady} exportReady={inspectedSource===source&&!isAnalyzing&&(boardView?!!boardSvg:graphSource===source&&graphFunction===selectedFunction&&canvasNodes.length>0)}
         updateBusy={['checking','downloading','installing'].includes(updateStatus.kind)}/>
       <input ref={fileInputRef} className="visually-hidden" type="file" accept=".codeflow,.cpp,.cc,.cxx,.h,.hh,.hpp,.hxx,.cs,text/plain" onChange={event=>void openFile(event.target.files?.[0])}/>
 
@@ -646,6 +720,7 @@ export default function App() {
               spellCheck={false}
               disabled={!recoveryReady}
               onChange={(event) => changeSource(event.target.value)}
+              onClick={event=>clickCode(event.currentTarget)}
               onScroll={(event) => { if (gutterRef.current) gutterRef.current.scrollTop = event.currentTarget.scrollTop;setSourceScrollTop(event.currentTarget.scrollTop); }}
             />
           </div>
@@ -659,17 +734,17 @@ export default function App() {
 
         <section className="panel chart-panel">
           <div className="chart-options">
-            <label>View <select aria-label="Chart view" value={chartView} onChange={event=>{setChartView(event.target.value as ChartView);setBoardSvg('');setShowAI(false);clearSelection();setProjectDirty(true);}}><option value="function">Function</option><option value="file">File map</option><option value="program">Whole program</option></select></label>
+            <label>View <select aria-label="Chart view" value={chartView} onChange={event=>{boardRenderer.current=null;setChartView(event.target.value as ChartView);setBoardSvg('');setShowAI(false);clearSelection();setProjectDirty(true);}}><option value="function">Function</option><option value="file">File map</option><option value="program">Whole program</option></select></label>
             <label>Labels <select aria-label="Label mode" value={mode} onChange={e=>{setMode(e.target.value as ChartMode);setProjectDirty(true);}}><option value="natural">Natural language</option><option value="code">Code</option></select></label>
             <label>Loop depth <select aria-label="Loop expansion depth" value={loopDepth ?? 'all'} onChange={e=>{setLoopDepth(e.target.value==='all'?null:Number(e.target.value));setLoopOverrides({});setProjectDirty(true);}}>
               <option value="0">0 · overview</option>
               {Array.from({length:Math.max(3,loopDepth ?? 0,...loops.map(loop=>loop.depth+1))},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}
               <option value="all">All</option>
             </select></label>
-            <ChartTools localAIActive={showAI} localAIDisabled={fileView} highlightUnmodified={highlightUnmodified} showHiddenBoxes={showHiddenBoxes}
+            <ChartTools localAIActive={showAI} localAIDisabled={fileView} highlightUnmodified={highlightUnmodified} showLoopLabels={showLoopLabels}
               canUndo={!!history.revisions.find(r=>r.id===history.active)?.parent} historyOpen={showHistory}
               onToggleLocalAI={()=>setShowAI(value=>!value)} onHighlightUnmodifiedChange={setHighlightUnmodified}
-              onShowHiddenBoxesChange={value=>{change('showHiddenBoxes',value,'Show hidden boxes');setProjectDirty(true);}}
+              onShowLoopLabelsChange={value=>{setShowLoopLabels(value);setProjectDirty(true);}}
               onUndo={()=>{selectRevision(history.revisions.find(r=>r.id===history.active)!.parent!);setProjectDirty(true);}}
               onToggleHistory={()=>setShowHistory(value=>!value)} onAlternate={()=>{createAlternate();setProjectDirty(true);}}
               onResetChart={()=>{resetChart();clearSelection();setProjectDirty(true);}}/>
@@ -687,15 +762,16 @@ export default function App() {
               <span className="toggle__track"><span /></span>
               <span>Comments</span>
             </label>
+            <label className="toggle"><input aria-label="Show hidden boxes" type="checkbox" checked={showHiddenBoxes} onChange={event=>{change('showHiddenBoxes',event.target.checked,'Show hidden boxes');setProjectDirty(true);}}/><span className="toggle__track"><span/></span><span>Show hidden boxes</span></label>
           </div>
 
           <div className="chart-canvas">
             {chartView==='program' && inspectedSource===source && functions.length ? <ProgramBoard source={source} language={language} functions={functions} mode={mode}
-              includeComments={includeComments} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes}
+              includeComments={includeComments} showLoopLabels={showLoopLabels} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes}
               highlightUnmodified={highlightUnmodified} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange program');setProjectDirty(true);}}
               onSelect={({functionId,nodeId})=>{setSelectedFunction(functionId);setSelectedNodeId(nodeId??'');setShowAI(false);if(!nodeId)setChartView('function');}}
-              selectedFunctionId={selectedFunction} selectedNodeId={selectedNodeId} onClearSelection={clearSelection}
-              onExportReady={setBoardSvg}/> : fileView && inspectedSource===source && functions.length ? <FunctionBoard language={language} source={source} functions={functions} mode={mode} highlightUnmodified={highlightUnmodified} includeComments={includeComments} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange functions');setProjectDirty(true);}} onOpenFunction={id=>{setSelectedFunction(id);setChartView('function');clearSelection();}} onExportReady={setBoardSvg}/> : canvasNodes.length > 0 ? (
+              focusRequest={sourceFocusRequest} onBoxPosition={saveBoxPosition} selectedFunctionId={selectedFunction} selectedNodeId={selectedNodeId} onClearSelection={clearSelection}
+              onExportReady={onBoardExport}/> : fileView && inspectedSource===source && functions.length ? <FunctionBoard language={language} source={source} functions={functions} mode={mode} highlightUnmodified={highlightUnmodified} includeComments={includeComments} showLoopLabels={showLoopLabels} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange functions');setProjectDirty(true);}} onOpenFunction={id=>{setSelectedFunction(id);setChartView('function');clearSelection();}} onExportReady={onBoardExport}/> : canvasNodes.length > 0 ? (
               <ReactFlow<CanvasNode>
                 nodes={canvasNodes}
                 edges={canvasEdges}
@@ -703,16 +779,20 @@ export default function App() {
                 edgeTypes={edgeTypes}
                 onInit={(instance) => { flowRef.current = instance; }}
                 onNodeClick={onNodeClick}
+                onNodesChange={changes=>setCanvasNodes(nodes=>applyNodeChanges(changes.filter(change=>change.type!=='position'&&change.type!=='remove'),nodes))}
+                onNodeDrag={moveBox}
+                onNodeDragStop={(event,node)=>{const position=moveBox(event,node);setAlignmentGuides([]);setCanvasNodes(nodes=>nodes.map(item=>({...item,dragging:false})));saveBoxPosition(selectedFunction,node,position);}}
                 onPaneClick={clearSelection}
                 fitView
                 fitViewOptions={{ padding: 0.18 }}
                 minZoom={0.18}
                 maxZoom={1.8}
-                nodesDraggable={false}
+                nodesDraggable
                 nodesConnectable={false}
                 elementsSelectable
                 proOptions={{ hideAttribution: true }}
               >
+                <AlignmentGuides guides={alignmentGuides}/>
                 <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--line)" />
                 <Controls showInteractive={false} position="bottom-right" />
                 <MiniMap

@@ -1,12 +1,12 @@
-name: Verify Windows draft
+name: Verify Windows runtime
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Draft release tag to verify
-        required: true
-        default: v0.4.1
+        description: Draft release tag, or empty to test current source
+        required: false
+        default: ""
 
 permissions:
   contents: write # GitHub requires push access to read unpublished draft releases.
@@ -14,13 +14,33 @@ permissions:
 jobs:
   installed-runtime:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        if: inputs.release_tag == ''
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: inputs.release_tag == ''
+        with:
+          workspaces: src-tauri -> target
+      - name: Build and test current source
+        if: inputs.release_tag == ''
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw "Frontend tests failed" }
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw "Native tests failed" }
+          npm run tauri build -- --no-bundle
+          if ($LASTEXITCODE -ne 0) { throw "Native build failed" }
+          "CODEFLOW_EXE=$((Resolve-Path src-tauri/target/release/codeflow.exe).Path)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Download draft installer
+        if: inputs.release_tag != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,6 +53,7 @@ jobs:
             throw "Expected one NSIS installer, found $($installers.Count)."
           }
       - name: Install draft into runner temp
+        if: inputs.release_tag != ''
         shell: pwsh
         run: |
           $installer = Get-ChildItem output/download -Filter "*-setup.exe" -File | Select-Object -First 1
@@ -48,6 +69,7 @@ jobs:
           }
           "CODEFLOW_EXE=$($executables[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Verify installed custom icon
+        if: inputs.release_tag != ''
         shell: python
         run: |
           from pathlib import Path
@@ -65,15 +87,16 @@ jobs:
           print('PASS: custom icon image embedded in EXE; matching SVG source installed')
       - name: Verify installed Windows runtime
         shell: pwsh
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: >-
           ./.github/scripts/windows-smoke.ps1
           -ExecutablePath "$env:CODEFLOW_EXE"
           -ScreenshotPath ./proof/windows-smoke.png
-          -TimeoutSeconds 120
+          -TimeoutSeconds 240
       - name: Verify recovery survives installer replacement
+        if: inputs.release_tag != ''
         shell: pwsh
-        timeout-minutes: 4
+        timeout-minutes: 6
         run: |
           $installer = Get-ChildItem output/download -Filter "*-setup.exe" -File | Select-Object -First 1
           $installDirectory = Join-Path $env:RUNNER_TEMP "codeflow-smoke-$env:GITHUB_RUN_ID"
@@ -88,13 +111,13 @@ jobs:
           ./.github/scripts/windows-smoke.ps1 `
             -ExecutablePath $executables[0].FullName `
             -ScreenshotPath ./proof/windows-smoke.png `
-            -TimeoutSeconds 120 `
+            -TimeoutSeconds 240 `
             -RestoreOnly
       - name: Upload installed runtime proof
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: codeflow-installed-windows-proof
+          name: ${{ inputs.release_tag != '' && 'codeflow-installed-windows-proof' || 'codeflow-windows-ui-proof' }}
           path: proof/
           if-no-files-found: warn
           retention-days: 14

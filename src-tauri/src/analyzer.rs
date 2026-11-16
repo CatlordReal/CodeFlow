@@ -8,6 +8,8 @@ pub struct FunctionInfo {
     pub name: String,
     pub qualified_name: String,
     pub line: usize,
+    pub start_byte: usize,
+    pub end_byte: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -767,6 +769,8 @@ fn function_definitions<'tree>(source: &str, root: Node<'tree>) -> Vec<DefinedFu
                 name,
                 qualified_name: qualified_name.clone(),
                 line: node.start_position().row + 1,
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
             };
             let unqualified_name = qualified_name
                 .rsplit("::")
@@ -1261,6 +1265,18 @@ int route(int value) {
         assert_eq!(functions[1].name, "route");
         let offset = functions[1].id.parse::<usize>().unwrap();
         assert_eq!(&source[offset..offset + 3], "int");
+    }
+
+    #[test]
+    fn function_ranges_use_utf8_bytes() {
+        let source = "// café
+int f() { return 1; }
+".to_owned();
+        let functions = inspect(source.clone());
+        let function = &functions[0];
+        assert_eq!(&source[function.start_byte..function.end_byte], "int f() { return 1; }");
+        assert_eq!(function.start_byte, "// café
+".len());
     }
 
     #[test]

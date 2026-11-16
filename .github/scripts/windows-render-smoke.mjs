@@ -93,6 +93,7 @@ int helper(int value) { return value * 2; }`;
 
   const boxLabel = "Sum values";
   const annotation = "Checked in Windows smoke";
+  const zoomBeforeSelection = await evaluate(client, `(() => {const t=document.querySelector('.chart-canvas .react-flow__viewport')?.style.transform??'';return Number(/scale\(([^)]+)\)/.exec(t)?.[1]);})()`);
   const selected = await evaluate(client, `(() => {
     const box = document.querySelector('.flow-symbol--subprocess')?.closest('.react-flow__node');
     if (!box) return false;
@@ -101,6 +102,44 @@ int helper(int value) { return value * 2; }`;
   })()`);
   if (!selected) throw new Error("Nested loop box was not clickable.");
   await waitForValue(client, deadline, `Boolean(document.querySelector('textarea[aria-label="Box label"]'))`, "box editor");
+  await delay(250);
+  const centered = await evaluate(client, `(() => {
+    const canvas=document.querySelector('.chart-canvas')?.getBoundingClientRect();
+    const editor=document.querySelector('.node-editor')?.getBoundingClientRect();
+    const box=document.querySelector('.react-flow__node.selected')?.getBoundingClientRect();
+    const transform=document.querySelector('.chart-canvas .react-flow__viewport')?.style.transform;
+    if (!canvas || !editor || !box) return null;
+    return { error: Math.abs((box.left+box.right)/2-(canvas.left+editor.left)/2), transform };
+  })()`);
+  const centeredZoom=Number(/scale\(([^)]+)\)/.exec(centered?.transform??'')?.[1]);
+  if (!centered || centered.error > 8 || !Number.isFinite(zoomBeforeSelection) || Math.abs(centeredZoom-zoomBeforeSelection)>0.0001) throw new Error(`Selected box centering or zoom failed: ${JSON.stringify(centered)}`);
+  const drag = await evaluate(client, `(() => {
+    const moving=document.querySelector('.flow-symbol--subprocess')?.closest('.react-flow__node');
+    const target=[...document.querySelectorAll('.chart-canvas .react-flow__node')].find(node=>node!==moving);
+    if(!moving || !target)return null;
+    const a=moving.getBoundingClientRect(), b=target.getBoundingClientRect();
+    return {id:moving.dataset.id,x:(a.left+a.right)/2,y:(a.top+a.bottom)/2,dx:b.left-a.left+4,dy:45,before:a.left,target:b.left};
+  })()`);
+  if (!drag) throw new Error('Drag boxes unavailable');
+  await client.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:drag.x,y:drag.y});
+  await client.call('Input.dispatchMouseEvent',{type:'mousePressed',x:drag.x,y:drag.y,button:'left',buttons:1,clickCount:1});
+  for(let i=1;i<=5;i++) {
+    await client.call('Input.dispatchMouseEvent',{type:'mouseMoved',x:drag.x+drag.dx*i/5,y:drag.y+drag.dy*i/5,button:'left',buttons:1});
+    await capture(client,path.join(options.output,`windows-drag-frame-${i}.png`));
+  }
+  await client.call('Input.dispatchMouseEvent',{type:'mouseReleased',x:drag.x+drag.dx,y:drag.y+drag.dy,button:'left',buttons:0,clickCount:1});
+  await waitForValue(client,deadline,`(() => {const n=document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${drag.id}"]`)});return n && Math.abs(n.getBoundingClientRect().left-${drag.target})<2;})()`, 'snapped box alignment');
+  await waitForValue(client,deadline,`window.__TAURI_INTERNALS__.invoke('read_recovery').then(r=>{const p=r&&JSON.parse(r.contents);return !!p&&Object.values(p.edits).some(set=>Object.values(set).some(edit=>Number.isFinite(edit.position?.x)&&Number.isFinite(edit.position?.y)));})`, 'saved box position');
+  const attached=await evaluate(client,`(() => {
+    const box=document.querySelector(${JSON.stringify(`.react-flow__node[data-id="${drag.id}"]`)})?.getBoundingClientRect();if(!box)return false;
+    return [...document.querySelectorAll('.chart-canvas .react-flow__edge-path')].some(path=>{
+      const matrix=path.getScreenCTM();if(!matrix)return false;
+      return [0,path.getTotalLength()].some(distance=>{const p=path.getPointAtLength(distance).matrixTransform(matrix);
+        return p.x>=box.left-2&&p.x<=box.right+2&&p.y>=box.top-2&&p.y<=box.bottom+2&&Math.min(Math.abs(p.x-box.left),Math.abs(p.x-box.right),Math.abs(p.y-box.top),Math.abs(p.y-box.bottom))<15;});
+    });
+  })()`);
+  if(!attached)throw new Error('Dragged box has no attached edge endpoint');
+
   const loopContinueLabel = "Repeat inner loop";
   const loopExitLabel = "Inner loop done";
   await clickButton(client, ".node-editor", "Expand this loop");
@@ -122,6 +161,31 @@ int helper(int value) { return value * 2; }`;
     return labels.includes(${JSON.stringify(loopContinueLabel)}) && labels.includes(${JSON.stringify(loopExitLabel)}) &&
       Boolean(document.querySelector('.flow-symbol--decision[data-loop][data-flagged-for-update="true"]'));
   })()`, "custom loop arrows and update flag");
+  await clickCheckboxLabel(client,'.chart-options','Loop arrow labels');
+  await waitForValue(client,deadline,`![...document.querySelectorAll('.flow-edge-label')].some(node=>[${JSON.stringify(loopContinueLabel)},${JSON.stringify(loopExitLabel)}].includes(node.textContent.trim()))`, 'hidden loop arrow labels');
+  await waitForValue(client,deadline,`window.__TAURI_INTERNALS__.invoke('read_recovery').then(r=>r&&JSON.parse(r.contents).showLoopLabels===false)`, 'saved loop label toggle');
+  await clickCheckboxLabel(client,'.chart-options','Loop arrow labels');
+  await waitForValue(client,deadline,`[...document.querySelectorAll('.flow-edge-label')].some(node=>node.textContent.trim()===${JSON.stringify(loopContinueLabel)})`, 'restored loop arrow labels');
+  await capture(client, path.join(options.output, "windows-loop-edits-wide.png"));
+  await setInput(client, 'input[aria-label="Exit arrow label"]', '   ');
+  await chooseTheme(client, "Mocha");
+  await waitForValue(client,deadline,`document.documentElement.dataset.theme==='catppuccin-mocha'`, 'Mocha before export');
+  await evaluate(client, `(() => {const api=window.__TAURI_INTERNALS__;window.__smokeOriginalInvoke=api.invoke;window.__smokeExports={};api.invoke=function(command,args,...rest){if(command==='save_document' && (args?.extension==='svg'||args?.extension==='png')){window.__smokeExports[args.extension]=args.contents;return Promise.resolve(true);}return window.__smokeOriginalInvoke.call(this,command,args,...rest);};})()`);
+  try {
+    await openToolbarMenu(client, 'Export');
+    await selectValue(client, 'select[aria-label="Export colour scheme"]', 'catppuccin-latte');
+    await clickButton(client, '[aria-label="Export actions"]', 'Export SVG');
+    await waitForValue(client,deadline,`typeof window.__smokeExports.svg==='string'`, 'SVG export');
+    await openToolbarMenu(client, 'Export');
+    await clickButton(client, '[aria-label="Export actions"]', 'Export PNG');
+    await waitForValue(client,deadline,`typeof window.__smokeExports.png==='string'`, 'PNG export');
+    const exported=await evaluate(client,`({svg:window.__smokeExports.svg,png:window.__smokeExports.png,theme:document.documentElement.dataset.theme})`);
+    if(exported.theme!=='catppuccin-mocha'||!exported.svg.includes('#1e66f5')||/flagged|update-marker|removal-marker/i.test(exported.svg)||/<text[^>]*>\s+<\/text>/.test(exported.svg)||!exported.png.startsWith('data:image/png;base64,')) throw new Error('Export palette, flags, whitespace, or PNG validation failed');
+    await writeFile(path.join(options.output,'windows-export-latte.svg'),exported.svg);
+    await writeFile(path.join(options.output,'windows-export-latte.png'),Buffer.from(exported.png.split(',')[1],'base64'));
+  } finally { await evaluate(client,`window.__TAURI_INTERNALS__.invoke=window.__smokeOriginalInvoke;delete window.__smokeOriginalInvoke`); }
+  await setInput(client, 'input[aria-label="Exit arrow label"]', loopExitLabel);
+  await chooseTheme(client, "Latte");
   await setViewport(client, 900, 900);
   await delay(350);
   const loopEditsCompactBytes = await capture(client, path.join(options.output, "windows-loop-edits-compact.png"));
@@ -151,6 +215,18 @@ int helper(int value) { return value * 2; }`;
   await selectValue(client, 'select[aria-label="Label mode"]', 'natural');
   await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent === ${JSON.stringify(boxLabel)}`, "retained natural label");
 
+  const beforeStructuralChange = await waitForNativeRecovery(client, deadline, {source:loopSource,fileName:await evaluate(client, `document.querySelector('input[aria-label="C++ filename"]').value`),label:boxLabel});
+  const previousRevisions = beforeStructuralChange.project.history.revisions.length;
+  const commentedLoop = loopSource.replace('    for (int value : values) {', '    /* for (int value : values) {').replace('    return sum;', '    */\n    return sum;');
+  await setTextarea(client, 'textarea[aria-label="C++ source code"]', commentedLoop);
+  await waitForValue(client, deadline, `!document.querySelector('.analysis-progress') && !document.querySelector('.flow-symbol--subprocess')`, 'commented-out loop analysis');
+  await waitForValue(client, deadline, `window.__TAURI_INTERNALS__.invoke('read_recovery').then(r=>{const p=r&&JSON.parse(r.contents);return p?.source===${JSON.stringify(commentedLoop)}&&p.sourceHistory?.some(a=>a.source===${JSON.stringify(loopSource)}&&a.history.revisions.length>=${previousRevisions});})`, 'archived source history in native recovery');
+  await setTextarea(client, 'textarea[aria-label="C++ source code"]', loopSource);
+  await waitForGraph(client, deadline, {comments:false,sourceToken:'smokeSum',mode:'natural',loopDepth:'1',subprocesses:1});
+  await waitForValue(client, deadline, `document.querySelector('.flow-symbol--subprocess .flow-symbol__label')?.textContent===${JSON.stringify(boxLabel)} && document.querySelector('.flow-symbol--subprocess .flow-symbol__annotation')?.textContent===${JSON.stringify(annotation)}`, 'restored loop caption and annotation');
+  await waitForValue(client, deadline, `window.__TAURI_INTERNALS__.invoke('read_recovery').then(r=>{const p=r&&JSON.parse(r.contents);return p?.source===${JSON.stringify(loopSource)}&&p.history?.revisions.length>=${previousRevisions}&&p.history.revisions.some(r=>JSON.stringify(r.state.edits).includes(${JSON.stringify(boxLabel)}))&&p.sourceHistory?.some(a=>a.source===${JSON.stringify(loopSource)});})`, 'restored older revisions and archive in native recovery');
+  await evaluate(client, `(() => {const t=document.querySelector('textarea[aria-label="C++ source code"]');const p=t.value.indexOf('int sum = 0');t.focus();t.setSelectionRange(p,p);t.dispatchEvent(new MouseEvent('click',{bubbles:true}));})()`);
+  await waitForValue(client,deadline,`Boolean(document.querySelector('.react-flow__node.selected .flow-symbol__label')?.textContent.includes('sum')) && Boolean(document.querySelector('.node-editor'))`, 'source click selected box');
   const commentRemovedSource = loopSource.replace("    // Add each number.\n", "");
   await setTextarea(client, 'textarea[aria-label="C++ source code"]', commentRemovedSource);
   await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "1", subprocesses: 1 });
@@ -186,7 +262,7 @@ int helper(int value) { return value * 2; }`;
   await delay(350);
   const viewportAfterHide = await evaluate(client, `document.querySelector('.chart-canvas .react-flow__viewport')?.style.transform ?? ''`);
   if (viewportAfterHide !== viewportBeforeHide) throw new Error(`Hide box changed viewport: ${viewportBeforeHide} -> ${viewportAfterHide}.`);
-  await clickCheckboxLabel(client, ".chart-options", "Show hidden boxes");
+  await clickCheckboxLabel(client, ".chart-toolbar", "Show hidden boxes");
   await waitForValue(client, deadline, `(() => {
     const box = document.querySelector('.flow-symbol[data-hidden="true"]');
     return box?.classList.contains('flow-symbol--subprocess') === true &&
@@ -231,6 +307,14 @@ int helper(int value) { return value * 2; }`;
   await delay(500);
   const compact = await waitForGraph(client, deadline, { comments: false, sourceToken: "smokeSum", mode: "natural", loopDepth: "0", subprocesses: 1 });
   const compactBytes = await capture(client, path.join(options.output, "windows-smoke-compact.png"));
+  const originalFullscreen = await evaluate(client, `window.__TAURI_INTERNALS__.invoke('plugin:window|is_fullscreen',{label:'main'})`);
+  await client.call('Input.dispatchKeyEvent',{type:'keyDown',key:'F11',code:'F11',windowsVirtualKeyCode:122,nativeVirtualKeyCode:122});
+  await client.call('Input.dispatchKeyEvent',{type:'keyUp',key:'F11',code:'F11',windowsVirtualKeyCode:122,nativeVirtualKeyCode:122});
+  await waitForValue(client,deadline,`window.__TAURI_INTERNALS__.invoke('plugin:window|is_fullscreen',{label:'main'}).then(v=>v!==${JSON.stringify(originalFullscreen)})`, 'native F11 fullscreen');
+  await client.call('Input.dispatchKeyEvent',{type:'keyDown',key:'F11',code:'F11',windowsVirtualKeyCode:122,nativeVirtualKeyCode:122});
+  await client.call('Input.dispatchKeyEvent',{type:'keyUp',key:'F11',code:'F11',windowsVirtualKeyCode:122,nativeVirtualKeyCode:122});
+  await waitForValue(client,deadline,`window.__TAURI_INTERNALS__.invoke('plugin:window|is_fullscreen',{label:'main'}).then(v=>v===${JSON.stringify(originalFullscreen)})`, 'native fullscreen restored');
+
 
   await setViewport(client, 1440, 900);
   await selectValue(client, 'select[aria-label="Chart view"]', 'program');

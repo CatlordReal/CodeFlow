@@ -82,3 +82,54 @@ export function remapChartForLanguage(state:ChartState,mappings:FunctionMapping[
   }
   return next;
 }
+
+/** Restore records from the same source and revision; current mapped records take precedence. */
+export function restoreArchivedHistory(
+  current: import('./history').ChartHistory,
+  archive: { source: string; language: 'cpp' | 'csharp'; history: import('./history').ChartHistory },
+  source: string,
+  language: 'cpp' | 'csharp',
+): import('./history').ChartHistory {
+  if (archive.source !== source || archive.language !== language) return current;
+  const oldRevisions = new Map(archive.history.revisions.map(revision => [revision.id, revision.state]));
+  const mergeRecords = <T>(oldRecords: Record<string, Record<string, T>>, records: Record<string, Record<string, T>>) => {
+    const result = { ...oldRecords };
+    for (const [key, values] of Object.entries(records)) result[key] = { ...result[key], ...values };
+    return result;
+  };
+  return { ...current, revisions: current.revisions.map(revision => {
+    const saved = oldRevisions.get(revision.id);
+    if (!saved) return revision;
+    const state = revision.state;
+    return { ...revision, state: { ...state,
+      edits: mergeRecords(saved.edits, state.edits),
+      captions: mergeRecords(saved.captions, state.captions),
+      loopOverrides: mergeRecords(saved.loopOverrides, state.loopOverrides),
+      hiddenBoxes: { ...saved.hiddenBoxes, ...state.hiddenBoxes },
+      functionPositions: { ...saved.functionPositions, ...state.functionPositions },
+    } };
+  }) };
+}
+
+/** Preserve the newest source snapshot and fit older snapshots within the project byte budget. */
+export function retainSourceHistory(
+  project: import('./presentation').Project,
+  latest: import('./presentation').SourceHistoryArchive,
+): { archives: import('./presentation').SourceHistoryArchive[]; trimmed: number } {
+  const budget = 16 * 1024 * 1024 - 256 * 1024;
+  const encoder = new TextEncoder();
+  const fits = (archives: import('./presentation').SourceHistoryArchive[]) =>
+    encoder.encode(JSON.stringify({ ...project, sourceHistory: archives }, null, 2)).length <= budget;
+  const archives = [latest];
+  if (!fits(archives)) throw new Error('Cannot preserve this source change safely. Undo the source edit or save a project copy first.');
+  let trimmed = 0;
+  const seen = new Set([JSON.stringify([latest.source, latest.language])]);
+  for (const archive of project.sourceHistory ?? []) {
+    const key = JSON.stringify([archive.source, archive.language]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (archives.length < 10 && fits([...archives, archive])) archives.push(archive);
+    else trimmed++;
+  }
+  return { archives, trimmed };
+}

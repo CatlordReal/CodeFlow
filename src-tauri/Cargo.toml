@@ -1,6 +1,6 @@
 [package]
 name = "codeflow"
-version = "0.5.2"
+version = "0.6.0"
 description = "Local C++ flowchart viewer"
 authors = ["CatlordReal"]
 edition = "2021"

@@ -264,3 +264,5 @@
   .app-toolbar__group > summary svg,
   .app-toolbar__recent > summary svg { transition: none; }
 }
+.app-toolbar__export-theme { display:grid; gap:6px; padding:7px 9px; font-size:11px; color:var(--muted); }
+.app-toolbar__export-theme select { max-width:100%; }

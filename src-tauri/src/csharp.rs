@@ -734,6 +734,8 @@ fn definitions<'tree>(source: &str, root: Node<'tree>) -> Vec<Definition<'tree>>
                     name: "top-level".to_owned(),
                     qualified_name: "Program.Main".to_owned(),
                     line: first.start_position().row + 1,
+                    start_byte: first.start_byte(),
+                    end_byte: globals.last().unwrap().end_byte(),
                 },
                 unqualified_name: "Main".to_owned(),
                 containing_type: Some("Program".to_owned()),
@@ -775,6 +777,8 @@ fn definition<'tree>(source: &str, node: Node<'tree>) -> Option<Definition<'tree
             name: name.clone(),
             qualified_name,
             line: node.start_position().row + 1,
+            start_byte: node.start_byte(),
+            end_byte: node.end_byte(),
         },
         unqualified_name: name,
         containing_type,
@@ -1418,6 +1422,17 @@ class Routes {
             .iter()
             .any(|function| function.qualified_name == "Routes.Route"));
         assert!(functions.iter().any(|function| function.name == "Local"));
+    }
+
+    #[test]
+    fn function_ranges_use_utf8_bytes() {
+        let source = "// café
+class C { void Run() { } }
+".to_owned();
+        let functions = inspect(source.clone());
+        let function = functions.iter().find(|function| function.name == "Run").unwrap();
+        assert_eq!(&source[function.start_byte..function.end_byte], "void Run() { }");
+        assert_eq!(function.start_byte, source.find("void").unwrap());
     }
 
     #[test]

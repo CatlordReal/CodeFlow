@@ -27,5 +27,6 @@ export function useChartHistory(){
  const alternate=useCallback(()=>{grouping.current=null;setHistory(current=>appendRevision(current,current.revisions.find(r=>r.id===current.active)!.state,'Alternate'));},[]);
  const load=useCallback((state:ChartState,saved?:ChartHistory)=>{grouping.current=null;setHistory(saved??initialHistory(state));},[]);
  const remap=useCallback((transform:(state:ChartState)=>ChartState)=>{grouping.current=null;setHistory(current=>({...current,revisions:current.revisions.map(revision=>({...revision,state:transform(revision.state)}))}));},[]);
- return {state:active.state,history,change,select,reset,alternate,load,remap,markSaved:()=>{grouping.current=null;}};
+ const transformHistory=useCallback((transform:(history:ChartHistory)=>ChartHistory)=>{grouping.current=null;setHistory(transform);},[]);
+ return {state:active.state,history,transformHistory,change,select,reset,alternate,load,remap,markSaved:()=>{grouping.current=null;}};
 }

@@ -6,6 +6,14 @@ export const COMMENT_COLUMNS = 34;
 export const LABEL_LINE_HEIGHT = 18;
 export const COMMENT_LINE_HEIGHT = 16;
 
+export const LOOP_BADGE_WIDTH = 60;
+export const LOOP_BADGE_HEIGHT = 16;
+export const LOOP_ICON_PATH = "M 8.5 3.5A3.5 3.5 0 0 0 2.2 2.6M 2.2 2.6V.8M 2.2 2.6H4M 1.5 6.5a3.5 3.5 0 0 0 6.3.9m0 0v1.8m0-1.8H6";
+export function loopBadgeTop(node: FlowNode): number {
+  return flowShape(node) === "decision" ? Math.max(18, Math.ceil((LOOP_BADGE_WIDTH / 2 + 2) * nodeContentHeight(node) / 288)) : 7;
+}
+
+
 export function wrapText(text: string, columns: number): string[] {
   const paragraphs = text.replace(/\t/g, "    ").split(/\r?\n/);
   const lines = paragraphs.flatMap((paragraph) => wrapLine(paragraph.trim(), columns));
@@ -33,9 +41,9 @@ export function nodeContentHeight(node: FlowNode): number {
 
 export function markerHeight(node:FlowNode):number {return node.kind==='loop'||node.loop_collapsed||node.flagged||node.flaggedForUpdate?22:0;}
 
-/** Loop text stays near its visual center; flag-only boxes reserve a full badge row. */
+/** Keep diamond content centered; rectangular symbols reserve a badge row. */
 export function nodeContentOffset(node:FlowNode):number {
-  return node.kind==='loop'||node.loop_collapsed ? 6 : markerHeight(node)/2;
+  return flowShape(node) === 'decision' ? 0 : markerHeight(node) / 2;
 }
 
 function wrapLine(line: string, columns: number): string[] {
