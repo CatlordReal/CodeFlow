@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: linux-release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_sha }}
+  group: linux-release-${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.event.workflow_run.head_branch }}
           fetch-depth: 0
           persist-credentials: false
       - name: Resolve and verify release
@@ -139,6 +139,55 @@ jobs:
               assert any(digest(path) in icons for path in bundle.rglob('*.png')), 'Custom launcher icon missing from AppImage'
               print('PASS: custom launcher PNG and SVG source embedded in AppImage')
           PYICON
+      - name: Add Linux artifacts and preserve updater platforms
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
+          APPIMAGE_NAME: ${{ steps.artifacts.outputs.appimage_name }}
+          SIGNATURE: ${{ steps.artifacts.outputs.signature }}
+        run: |
+          mkdir -p updater
+          # Windows and Linux may build in parallel; stage the complete updater only after Windows is ready.
+          for attempt in $(seq 1 60); do
+            if gh release download "$RELEASE_TAG" --pattern latest.json --dir updater; then
+              break
+            fi
+            if [ "$attempt" -eq 60 ]; then
+              echo "Windows updater manifest did not become available." >&2
+              exit 1
+            fi
+            sleep 15
+          done
+          cp updater/latest.json updater/latest.before.json
+          export UPDATE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APPIMAGE_NAME}"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = 'updater/latest.json';
+          const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (manifest.version?.replace(/^v/, '') !== process.env.RELEASE_VERSION) {
+            throw new Error(`latest.json version '${manifest.version}' does not match '${process.env.RELEASE_VERSION}'.`);
+          }
+          if (!manifest.platforms?.['windows-x86_64']) {
+            throw new Error("Existing latest.json has no 'windows-x86_64' updater platform.");
+          }
+          const before = JSON.stringify(manifest.platforms);
+          const linux = {
+            signature: fs.readFileSync(process.env.SIGNATURE, 'utf8').trim(),
+            url: process.env.UPDATE_URL,
+          };
+          manifest.platforms['linux-x86_64'] = linux;
+          manifest.platforms['linux-x86_64-appimage'] = linux;
+          for (const [key, value] of Object.entries(JSON.parse(before))) {
+            if (!key.startsWith('linux-x86_64') && JSON.stringify(manifest.platforms[key]) !== JSON.stringify(value)) {
+              throw new Error(`Updater platform '${key}' changed while adding Linux.`);
+            }
+          }
+          fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
+          gh release upload "$RELEASE_TAG" "$APPIMAGE" "$SIGNATURE" updater/latest.json --clobber
+
       # Test tooling belongs to the workflow commit; the app stays on its verified release tag.
       - name: Check out native test harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -170,41 +219,3 @@ jobs:
           path: output/
           if-no-files-found: warn
           retention-days: 14
-      - name: Add Linux artifacts and preserve updater platforms
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
-          APPIMAGE_NAME: ${{ steps.artifacts.outputs.appimage_name }}
-          SIGNATURE: ${{ steps.artifacts.outputs.signature }}
-        run: |
-          mkdir -p updater
-          gh release download "$RELEASE_TAG" --pattern latest.json --dir updater
-          cp updater/latest.json updater/latest.before.json
-          export UPDATE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APPIMAGE_NAME}"
-          node <<'NODE'
-          const fs = require('node:fs');
-          const path = 'updater/latest.json';
-          const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
-          if (manifest.version?.replace(/^v/, '') !== process.env.RELEASE_VERSION) {
-            throw new Error(`latest.json version '${manifest.version}' does not match '${process.env.RELEASE_VERSION}'.`);
-          }
-          if (!manifest.platforms?.['windows-x86_64']) {
-            throw new Error("Existing latest.json has no 'windows-x86_64' updater platform.");
-          }
-          const before = JSON.stringify(manifest.platforms);
-          const linux = {
-            signature: fs.readFileSync(process.env.SIGNATURE, 'utf8').trim(),
-            url: process.env.UPDATE_URL,
-          };
-          manifest.platforms['linux-x86_64'] = linux;
-          manifest.platforms['linux-x86_64-appimage'] = linux;
-          for (const [key, value] of Object.entries(JSON.parse(before))) {
-            if (!key.startsWith('linux-x86_64') && JSON.stringify(manifest.platforms[key]) !== JSON.stringify(value)) {
-              throw new Error(`Updater platform '${key}' changed while adding Linux.`);
-            }
-          }
-          fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
-          NODE
-          gh release upload "$RELEASE_TAG" "$APPIMAGE" "$SIGNATURE" updater/latest.json --clobber
