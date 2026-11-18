@@ -110,7 +110,12 @@ function detour(a: RoutePoint, b: RoutePoint, bounds: RouteBounds[]): RoutePoint
   return null;
 }
 function route(source: CanvasNode, target: CanvasNode, sourceSide: Side, targetSide: Side, bounds: RouteBounds[]): RoutePoint[] {
-  const start = port(source, sourceSide), end = port(target, targetSide), distance = 24;
+  const start = port(source, sourceSide), end = port(target, targetSide);
+  const sourceVector = vectors[sourceSide], targetVector = vectors[targetSide];
+  const facing = sourceVector.x === -targetVector.x && sourceVector.y === -targetVector.y;
+  const gap = (end.x - start.x) * sourceVector.x + (end.y - start.y) * sourceVector.y;
+  // Opposing ports closer than two stubs must meet halfway without reversing.
+  const distance = facing && gap >= 0 ? Math.min(24, gap / 2) : 24;
   const a = {x: start.x + vectors[sourceSide].x * distance, y: start.y + vectors[sourceSide].y * distance};
   const b = {x: end.x + vectors[targetSide].x * distance, y: end.y + vectors[targetSide].y * distance};
   const xs = [(a.x + b.x) / 2, ...bounds.flatMap(box => [box.x - 24, box.x + box.width + 24])];

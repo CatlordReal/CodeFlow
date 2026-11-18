@@ -89,3 +89,20 @@ for (let i = 1; i < widePath.length; i++) {
  const hit = a.x === b.x ? a.x > x && a.x < x + 4_000_000 && Math.max(a.y,b.y) > y && Math.min(a.y,b.y) < y + 80 : a.y > y && a.y < y + 80 && Math.max(a.x,b.x) > x && Math.min(a.x,b.x) < x + 4_000_000;
  assert.equal(hit, false, 'large route avoids obstacle');
 }
+
+// Opposed close ports with a diagonal offset must not reverse along the travel axis.
+for (const [sourceSide, targetSide, sourcePosition, targetPosition, axis, sign] of [
+ ['s','n',{x:0,y:0},{x:150,y:100},'y',1],
+ ['n','s',{x:0,y:100},{x:150,y:0},'y',-1],
+ ['e','w',{x:0,y:0},{x:120,y:150},'x',1],
+ ['w','e',{x:120,y:0},{x:0,y:150},'x',-1],
+] as const) {
+ const from = node('source',sourcePosition.x,sourcePosition.y), to = node('target',targetPosition.x,targetPosition.y);
+ const connection: CanvasEdge = {...edge,sourceHandle:`out-${sourceSide}`,targetHandle:`in-${targetSide}`,data:{...edge.data!,sourceOrigin:{x:-1,y:-1}}};
+ const points = positionedCanvas([from,to],[connection]).edges[0].data!.points;
+ const expectedStart = sourceSide === 's' ? {x:50,y:80} : sourceSide === 'n' ? {x:50,y:100} : sourceSide === 'e' ? {x:100,y:40} : {x:120,y:40};
+ const expectedEnd = targetSide === 'n' ? {x:200,y:100} : targetSide === 's' ? {x:200,y:80} : targetSide === 'w' ? {x:120,y:190} : {x:100,y:190};
+ assert.deepEqual(points[0], expectedStart);
+ assert.deepEqual(points.at(-1), expectedEnd);
+ for (let i=1;i<points.length;i++) assert.ok(sign * (points[i][axis] - points[i-1][axis]) >= 0, `close ${sourceSide}/${targetSide} route does not backtrack`);
+}
