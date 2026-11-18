@@ -102,7 +102,8 @@ export function readProject(text: string): Project {
   value.labelSource ??= value.source;
   if(typeof value.labelSource!=='string'||new TextEncoder().encode(value.labelSource).length>2*1024*1024)throw new Error('Invalid label source.');
   records(value.edits, false); records(value.captions, true);
-  value.expandLoops ??= false; value.includeComments ??= false;
+  if (value.expandLoops === undefined) value.expandLoops = false;
+  if (value.includeComments === undefined) value.includeComments = false;
   if (value.showLoopLabels === undefined) value.showLoopLabels = true;
   if (typeof value.showLoopLabels !== 'boolean') throw new Error('Invalid loop-label option.');
   if(typeof value.expandLoops!=='boolean' || typeof value.includeComments!=='boolean') throw new Error('Invalid project view options.');
@@ -130,8 +131,8 @@ export function readProject(text: string): Project {
       if(!revision||!validLoopKey(revision.id)||ids.has(revision.id)||typeof revision.name!=='string'||revision.name.length>120||(revision.parent!==null&&!ids.has(revision.parent)))throw new Error('Invalid chart revision.');
       ids.add(revision.id);const number=/^revision-(\d+)$/.exec(revision.id);if(number)largest=Math.max(largest,Number(number[1]));
       if(!revision.state||typeof revision.state!=='object'||Array.isArray(revision.state))throw new Error('Invalid chart revision state.');
-      const validated=readProject(JSON.stringify({format:'codeflow',version:1,source:'',fileName:'history.cpp',...revision.state,history:undefined,sourceHistory:undefined}));
-      revision.state={mode:validated.mode,edits:validated.edits,captions:validated.captions,loopDepth:validated.loopDepth,loopOverrides:validated.loopOverrides,hiddenBoxes:validated.hiddenBoxes,showHiddenBoxes:validated.showHiddenBoxes,functionPositions:validated.functionPositions};
+      const validated=readProject(JSON.stringify({format:'codeflow',version:1,source:'',fileName:'history.cpp',includeComments:value.includeComments,showLoopLabels:value.showLoopLabels,...revision.state,history:undefined,sourceHistory:undefined}));
+      revision.state={mode:validated.mode,edits:validated.edits,captions:validated.captions,loopDepth:validated.loopDepth,loopOverrides:validated.loopOverrides,hiddenBoxes:validated.hiddenBoxes,showHiddenBoxes:validated.showHiddenBoxes,includeComments:validated.includeComments,showLoopLabels:validated.showLoopLabels??true,functionPositions:validated.functionPositions};
     }
     if(!ids.has(h.active)||h.next<=largest)throw new Error('Invalid active chart revision.');
   }

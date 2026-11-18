@@ -783,6 +783,26 @@ mod tests {
     }
 
     #[test]
+    fn diagram_toggles_validate_in_saved_and_archived_history() {
+        let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
+        let state = serde_json::json!({"mode":"natural","edits":{},"captions":{},"includeComments":true,"showLoopLabels":false});
+        let history = serde_json::json!({"active":"revision-0","next":1,"revisions":[{"id":"revision-0","parent":null,"name":"Initial","state":state}]});
+        value["history"] = history.clone();
+        value["sourceHistory"] = serde_json::json!([{"source":"older source","language":"cpp","history":history}]);
+        assert!(validate_recovery_project(&value.to_string()).is_ok());
+        for field in ["includeComments", "showLoopLabels"] {
+            for invalid in [serde_json::Value::Null, serde_json::json!("false"), serde_json::json!(0)] {
+                let mut current = value.clone();
+                current["history"]["revisions"][0]["state"][field] = invalid.clone();
+                assert!(validate_recovery_project(&current.to_string()).is_err());
+                let mut archived = value.clone();
+                archived["sourceHistory"][0]["history"]["revisions"][0]["state"][field] = invalid;
+                assert!(validate_recovery_project(&archived.to_string()).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn review_flags_and_loop_labels_validate_and_survive_recovery() {
         let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
         let edits = serde_json::json!({"function:detail":{"loop":{

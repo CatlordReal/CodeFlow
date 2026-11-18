@@ -42,3 +42,50 @@ assert.ok(!(firstLabel.x < secondLabel.x + secondLabel.width && firstLabel.x + f
 
 const alreadyMovedObstacle = {...movedObstacle, position: {x:0,y:100}};
 assert.notEqual(positionedCanvas([source,target,alreadyMovedObstacle], [edge], new Map(), new Set(['obstacle'])).edges[0].data!.points, edge.data!.points, 'explicit moved node reroutes obstructed unrelated edges');
+
+// An unrelated box forcing a detour must also reshape the edge when moved away.
+const distantTarget = node('target', 0, 400);
+const longEdge: CanvasEdge = {...edge, data: {...edge.data!, points: [{x:50,y:80},{x:50,y:400}], targetOrigin: {x:0,y:400}}};
+const blocking = node('obstacle', 0, 200);
+const blocked = positionedCanvas([source, distantTarget, blocking], [longEdge], new Map(), new Set(['obstacle']));
+const clearObstacle = {...blocking, position: {x: 300, y: 200}};
+const cleared = positionedCanvas([source, distantTarget, clearObstacle], blocked.edges, new Map(), new Set(['obstacle']));
+assert.notDeepEqual(cleared.edges[0].data!.points, blocked.edges[0].data!.points, 'moving an obstacle away releases its detour');
+assert.deepEqual(cleared.edges[0].data!.points, [{x:50,y:80},{x:50,y:400}]);
+
+// Replaying a saved position and restoring it must keep each handle attached.
+const sideEdge: CanvasEdge = {...edge, sourceHandle: 'out-e', targetHandle: 'in-w', data: {...edge.data!, points: [{x:100,y:40},{x:150,y:40},{x:150,y:240},{x:0,y:240}]}};
+const movedSide = positionedCanvas([movedSource, movedTarget], [sideEdge]);
+assert.deepEqual(movedSide.edges[0].data!.points[0], {x:250,y:40});
+assert.deepEqual(movedSide.edges[0].data!.points.at(-1), {x:100,y:290});
+const restored = positionedCanvas([source, target], movedSide.edges);
+assert.deepEqual(restored.edges[0].data!.points[0], {x:100,y:40});
+assert.deepEqual(restored.edges[0].data!.points.at(-1), {x:0,y:240});
+
+// Alternating barriers require more than one turn between the endpoint stubs.
+const mazeTarget = node('target', 0, 1000);
+const mazeEdge: CanvasEdge = {...edge, data: {...edge.data!, targetOrigin: {x:0,y:900}}};
+const maze = [node('left-wall', -300, -100, 200, 1300), node('right-wall', 200, -100, 200, 1300), node('first-wall', -100, 250, 200, 80), node('second-wall', 0, 550, 200, 80)];
+const mazePath = positionedCanvas([source, mazeTarget, ...maze], [mazeEdge]).edges[0].data!.points;
+assert.deepEqual(mazePath[0], {x:50,y:80});
+assert.deepEqual(mazePath.at(-1), {x:50,y:1000});
+for (let i = 1; i < mazePath.length; i++) {
+ const a = mazePath[i - 1], b = mazePath[i];
+ assert.ok(a.x === b.x || a.y === b.y, 'maze route remains orthogonal');
+ for (const box of maze) {
+  const {x, y} = box.position, width = box.width!, height = box.height!;
+  const hit = a.x === b.x ? a.x > x && a.x < x + width && Math.max(a.y,b.y) > y && Math.min(a.y,b.y) < y + height : a.y > y && a.y < y + height && Math.max(a.x,b.x) > x && Math.min(a.x,b.x) < x + width;
+  assert.equal(hit, false, `maze route avoids ${box.id}`);
+ }
+}
+
+// Collision avoidance must win even when the clear route exceeds one million units.
+const wideTarget = node('target', 0, 2_000_000);
+const wideEdge: CanvasEdge = {...edge, data: {...edge.data!, targetOrigin: {x:0,y:1_900_000}}};
+const wideObstacle = node('wide-obstacle', -2_000_000, 1_000_000, 4_000_000, 80);
+const widePath = positionedCanvas([source, wideTarget, wideObstacle], [wideEdge]).edges[0].data!.points;
+for (let i = 1; i < widePath.length; i++) {
+ const a = widePath[i - 1], b = widePath[i], {x,y} = wideObstacle.position;
+ const hit = a.x === b.x ? a.x > x && a.x < x + 4_000_000 && Math.max(a.y,b.y) > y && Math.min(a.y,b.y) < y + 80 : a.y > y && a.y < y + 80 && Math.max(a.x,b.x) > x && Math.min(a.x,b.x) < x + 4_000_000;
+ assert.equal(hit, false, 'large route avoids obstacle');
+}

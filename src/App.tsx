@@ -24,7 +24,7 @@ import LocalAI from "./LocalAI";
 import { analyzeLoops, overviewGraph, simplifyGraph } from "./simplify";
 import { hideGraphNodes, nodePresentationKey, presentGraph, presentLoopEdgeLabels, readProject, type ChartMode, type ChartEdits, type CaptionSets, type LoopOverrides, type Project, type SourceHistoryArchive } from "./presentation";
 import "./editing.css";
-import {defaultChartState,useChartHistory} from "./history";
+import {defaultChartState,useChartHistory,historyShortcut,historyTarget} from "./history";
 import HistoryPanel from "./HistoryPanel";
 import FunctionBoard from "./FunctionBoard";
 import {mapFunction,matchFunctions,remapChart,remapChartForLanguage,restoreArchivedHistory,retainSourceHistory,type FunctionMapping} from './preservation';
@@ -68,16 +68,13 @@ export default function App() {
   const [functions, setFunctions] = useState<FunctionInfo[]>([]);
   const [selectedFunction, setSelectedFunction] = useState("");
   const [inspectedSource, setInspectedSource] = useState("");
-  const [includeComments, setIncludeComments] = useState(false);
-  const [showLoopLabels,setShowLoopLabels]=useState(true);
   const [exportTheme,setExportTheme]=useState<ThemeId | 'current'>('current');
-  const {state:chart,history,change,load:loadHistory,select:selectRevision,reset:resetChart,alternate:createAlternate,remap:remapHistory,transformHistory,markSaved}=useChartHistory();
-  const {loopDepth,loopOverrides,mode,edits,captions,hiddenBoxes,showHiddenBoxes,functionPositions}=chart;
+  const {state:chart,history,change,changeFields,load:loadHistory,select:selectRevision,navigate:navigateHistory,reset:resetChart,alternate:createAlternate,remap:remapHistory,transformHistory,markSaved}=useChartHistory();
+  const {loopDepth,loopOverrides,mode,edits,captions,hiddenBoxes,showHiddenBoxes,functionPositions,includeComments,showLoopLabels}=chart;
   const expandLoops=loopDepth===null;
-  const setLoopDepth=(value:number|null)=>change('loopDepth',value,'Loop depth');
   const setLoopOverrides=(value:LoopOverrides|((v:LoopOverrides)=>LoopOverrides))=>change('loopOverrides',value,'Loop expansion');
   const setMode=(value:ChartMode)=>change('mode',value,'Label mode');
-  const setEdits=(value:ChartEdits|((v:ChartEdits)=>ChartEdits))=>change('edits',value,'Edit box',`edit:${selectedFunction}:${selectedNodeId}`);
+  const setEdits=(value:ChartEdits|((v:ChartEdits)=>ChartEdits),field?:string)=>change('edits',value,'Edit box',field?`edit:${selectedFunction}:${selectedNodeId}:${field}`:undefined);
   const setCaptions=(value:CaptionSets|((v:CaptionSets)=>CaptionSets))=>change('captions',value,'AI captions');
   const [showHistory,setShowHistory]=useState(false);
   const [language,setLanguage]=useState<SourceLanguage>('cpp');
@@ -106,6 +103,8 @@ export default function App() {
   const [showAI, setShowAI] = useState(false);
   const [projectDirty, setProjectDirty] = useState(false);
   const layoutRequest = useRef(0);
+  const draggingBox = useRef(false);
+  const [layoutEpoch,setLayoutEpoch]=useState(0);
   const [graphSource, setGraphSource] = useState('');
   const [graphFunction, setGraphFunction] = useState('');
   const openRequest = useRef(0);
@@ -146,8 +145,8 @@ export default function App() {
   useEffect(()=>{void recentProjects().then(setRecent).catch(()=>undefined);},[]);
   useEffect(()=>{let active=true;const session=documentSession.current;void readRecovery().then(opened=>{
     if(!active||!opened||documentSession.current!==session)return;const project=readProject(opened.contents);return inspectCpp(project.labelSource??project.source,project.language).then(savedFunctions=>{if(!active||documentSession.current!==session)return;baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session};projectToken.current=opened.projectToken??null;
-    replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);setShowLoopLabels(project.showLoopLabels??true);sourceHistory.current=project.sourceHistory??[];
-    loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions},project.history);setIsDirty(opened.sourceDirty??opened.dirty??true);setProjectDirty(opened.projectDirty??opened.dirty??true);});
+    replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');sourceHistory.current=project.sourceHistory??[];
+    loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions},project.history);setIsDirty(opened.sourceDirty??opened.dirty??true);setProjectDirty(opened.projectDirty??opened.dirty??true);});
   }).catch(cause=>{if(active){recoveryError.current=false;setDocumentStatus({kind:'error',message:`Recovery could not be opened: ${readError(cause)}`});}}).finally(()=>{if(active)setRecoveryReady(true);});return()=>{active=false;};},[loadHistory]);
   useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{void saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,showLoopLabels,isDirty,projectDirty,recoveryReady,language,chartView]);
 
@@ -228,7 +227,7 @@ export default function App() {
               if(!Object.keys(project.edits).length&&!Object.keys(project.captions).length)continue;
               if((project.language??'cpp')!==language)continue;
               const savedSource=project.labelSource??project.source;const savedFunctions=await inspectCpp(savedSource,language);
-              labelLibrary.current.push({source:savedSource,language,functions:savedFunctions,state:{mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions}});
+              labelLibrary.current.push({source:savedSource,language,functions:savedFunctions,state:{mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions}});
             }catch{/* A missing recent project must not block editing. */}
           }
           const candidates=labelLibrary.current.filter(candidate=>candidate.language===language&&candidate.source!==source);
@@ -308,22 +307,23 @@ export default function App() {
   const lastFitKey=useRef('');
   useEffect(() => {
     const request = ++layoutRequest.current;
+    if (draggingBox.current) return;
     if (!displayedGraph.nodes.length) { setCanvasNodes([]); setCanvasEdges([]); return; }
     const labels=new Map(presentLoopEdgeLabels(displayedGraph,showLoopLabels).edges.map(edge=>[edge.id,edge.label]));
     void layoutGraph(displayedGraph,labels).then(layout => {
       const result=positionedCanvas(layout.nodes,layout.edges,labels);
       if (request !== layoutRequest.current) return;
       setCanvasNodes(result.nodes.map(node=>({...node,selected:node.id===selectedNodeRef.current}))); setCanvasEdges(result.edges.map(edge=>({...edge,label:labels.get(edge.id)??edge.label})));
-      if(lastFitKey.current!==fitKey){lastFitKey.current=fitKey;window.setTimeout(()=>void flowRef.current?.fitView({padding:0.12,duration:0}),60);}
+      if(lastFitKey.current!==fitKey){lastFitKey.current=fitKey;window.setTimeout(()=>{if(request===layoutRequest.current&&!draggingBox.current)void flowRef.current?.fitView({padding:0.12,duration:0});},60);}
     }).catch(cause => { if(request===layoutRequest.current) setError(readError(cause)); });
     return () => { layoutRequest.current++; };
-  }, [displayedGraph,fitKey,showLoopLabels]);
+  }, [displayedGraph,fitKey,showLoopLabels,layoutEpoch]);
   useEffect(()=>setCanvasNodes(nodes=>nodes.map(node=>({...node,selected:node.id===selectedNodeId}))),[selectedNodeId]);
   const selectedNode = displayedGraph.nodes.find(node => node.id === selectedNodeId);
   const graphKey = source + '\0' + selectedFunction + '\0' + JSON.stringify([loopDepth,loopOverrides[selectedFunction] ?? {},hiddenBoxes[selectedFunction]??[],showHiddenBoxes]);
   const editKey = selectedNode ? nodePresentationKey(selectedFunction,selectedNode,loopDepth) : selectedFunction + ':overview';
   const editNode = (field: 'code' | 'natural' | 'annotation', text: string) => {
-    setEdits(current => ({...current, [editKey]: {...current[editKey], [selectedNodeId]: {...current[editKey]?.[selectedNodeId], [field]: text}}}));
+    setEdits(current => ({...current, [editKey]: {...current[editKey], [selectedNodeId]: {...current[editKey]?.[selectedNodeId], [field]: text}}}),field);
     setProjectDirty(true);
   };
   const setLoopExpansion = (id: string, expanded: boolean | undefined) => {
@@ -383,8 +383,8 @@ export default function App() {
         const project = readProject(contents);
         const savedFunctions=await inspectCpp(project.labelSource??project.source,project.language);if(request!==openRequest.current||JSON.stringify(projectRef.current)!==JSON.stringify(before))return;
         baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session:documentSession.current+1};
-        replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');setIncludeComments(project.includeComments);setShowLoopLabels(project.showLoopLabels??true);sourceHistory.current=project.sourceHistory??[];
-        loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,functionPositions:project.functionPositions},project.history);
+        replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');sourceHistory.current=project.sourceHistory??[];
+        loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions},project.history);
       } else {
         if(new TextEncoder().encode(contents).length > 2 * 1024 * 1024) throw new Error('Source must be smaller than 2 MB.');
         sourceHistory.current=[];replaceSource(contents);setFileName(file.name);setLanguage(/\.cs$/i.test(file.name)?'csharp':'cpp');setChartView('function');loadHistory(defaultChartState());baseline.current=null;
@@ -440,6 +440,13 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (showUpdateDialog) return;
       if(!recoveryReady)return;
+      const direction=historyShortcut(event,event.target);
+      if(direction){event.preventDefault();if(historyTarget(history,direction)){navigateHistory(direction);setProjectDirty(true);}return;}
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase()==='y' && event.target instanceof Element && event.target.closest('textarea, input:not([type]), input[type="text"]')) {
+        event.preventDefault();
+        document.execCommand('redo');
+        return;
+      }
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.key.toLowerCase() === "o") {
         event.preventDefault();
@@ -456,7 +463,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveProject,openChooser,showUpdateDialog,recoveryReady]);
+  }, [saveProject,openChooser,showUpdateDialog,recoveryReady,navigateHistory,history]);
 
   const checkForUpdates = useCallback(async () => {
     if (!isDesktop) {
@@ -736,7 +743,7 @@ export default function App() {
           <div className="chart-options">
             <label>View <select aria-label="Chart view" value={chartView} onChange={event=>{boardRenderer.current=null;setChartView(event.target.value as ChartView);setBoardSvg('');setShowAI(false);clearSelection();setProjectDirty(true);}}><option value="function">Function</option><option value="file">File map</option><option value="program">Whole program</option></select></label>
             <label>Labels <select aria-label="Label mode" value={mode} onChange={e=>{setMode(e.target.value as ChartMode);setProjectDirty(true);}}><option value="natural">Natural language</option><option value="code">Code</option></select></label>
-            <label>Loop depth <select aria-label="Loop expansion depth" value={loopDepth ?? 'all'} onChange={e=>{setLoopDepth(e.target.value==='all'?null:Number(e.target.value));setLoopOverrides({});setProjectDirty(true);}}>
+            <label>Loop depth <select aria-label="Loop expansion depth" value={loopDepth ?? 'all'} onChange={e=>{changeFields({loopDepth:e.target.value==='all'?null:Number(e.target.value),loopOverrides:{}},'Loop depth');setProjectDirty(true);}}>
               <option value="0">0 · overview</option>
               {Array.from({length:Math.max(3,loopDepth ?? 0,...loops.map(loop=>loop.depth+1))},(_,i)=><option key={i+1} value={i+1}>{i+1}</option>)}
               <option value="all">All</option>
@@ -744,8 +751,8 @@ export default function App() {
             <ChartTools localAIActive={showAI} localAIDisabled={fileView} highlightUnmodified={highlightUnmodified} showLoopLabels={showLoopLabels}
               canUndo={!!history.revisions.find(r=>r.id===history.active)?.parent} historyOpen={showHistory}
               onToggleLocalAI={()=>setShowAI(value=>!value)} onHighlightUnmodifiedChange={setHighlightUnmodified}
-              onShowLoopLabelsChange={value=>{setShowLoopLabels(value);setProjectDirty(true);}}
-              onUndo={()=>{selectRevision(history.revisions.find(r=>r.id===history.active)!.parent!);setProjectDirty(true);}}
+              onShowLoopLabelsChange={value=>{change('showLoopLabels',value,'Loop labels');setProjectDirty(true);}}
+              onUndo={()=>{navigateHistory('undo');setProjectDirty(true);}}
               onToggleHistory={()=>setShowHistory(value=>!value)} onAlternate={()=>{createAlternate();setProjectDirty(true);}}
               onResetChart={()=>{resetChart();clearSelection();setProjectDirty(true);}}/>
           </div>
@@ -758,7 +765,7 @@ export default function App() {
               </select>
             </label>
             <label className="toggle">
-              <input type="checkbox" checked={includeComments} onChange={(event) => {setIncludeComments(event.target.checked);setProjectDirty(true);}} />
+              <input type="checkbox" checked={includeComments} onChange={(event) => {change('includeComments',event.target.checked,'Comments');setProjectDirty(true);}} />
               <span className="toggle__track"><span /></span>
               <span>Comments</span>
             </label>
@@ -780,8 +787,9 @@ export default function App() {
                 onInit={(instance) => { flowRef.current = instance; }}
                 onNodeClick={onNodeClick}
                 onNodesChange={changes=>setCanvasNodes(nodes=>applyNodeChanges(changes.filter(change=>change.type!=='position'&&change.type!=='remove'),nodes))}
+                onNodeDragStart={()=>{draggingBox.current=true;layoutRequest.current++;}}
                 onNodeDrag={moveBox}
-                onNodeDragStop={(event,node)=>{const position=moveBox(event,node);setAlignmentGuides([]);setCanvasNodes(nodes=>nodes.map(item=>({...item,dragging:false})));saveBoxPosition(selectedFunction,node,position);}}
+                onNodeDragStop={(event,node)=>{const position=moveBox(event,node);draggingBox.current=false;setLayoutEpoch(value=>value+1);setAlignmentGuides([]);setCanvasNodes(nodes=>nodes.map(item=>({...item,dragging:false})));saveBoxPosition(selectedFunction,node,position);}}
                 onPaneClick={clearSelection}
                 fitView
                 fitViewOptions={{ padding: 0.18 }}
@@ -817,15 +825,15 @@ export default function App() {
         if(key!==graphKey) return;
         setEdits(current=>{const result={...current};for(const node of viewGraph.nodes){if(next[node.id]===undefined)continue;const key=nodePresentationKey(selectedFunction,node,loopDepth);result[key]={...result[key],[node.id]:{...result[key]?.[node.id],natural:next[node.id]}};}return result;});setMode('natural');setProjectDirty(true);
       }}/>}
-      {selectedNode && !showAI && <aside className="node-editor" aria-label="Edit flowchart box">
+      {selectedNode && !showAI && <aside className="node-editor" aria-label="Edit flowchart box" data-chart-history>
         <header><strong>Box · line {selectedNode.line}</strong><button className="button" onClick={clearSelection}>Close</button></header>
         {selectedNode.loop_id && <div className="loop-actions">
           <strong>Loop level {(selectedNode.loop_depth ?? 0)+1}</strong>
           {selectedNode.loop_can_collapse ? <button className="button" onClick={()=>setLoopExpansion(selectedNode.loop_id!,!!selectedNode.loop_collapsed)}>{selectedNode.loop_collapsed?'Expand this loop':'Collapse this loop'}</button> : <span>Terminal paths require this loop to stay expanded.</span>}
           {loopOverrides[selectedFunction]?.[selectedNode.loop_id]!==undefined && <button className="button" onClick={()=>setLoopExpansion(selectedNode.loop_id!,undefined)}>Follow global depth</button>}
           {selectedNode.kind === 'loop' && <>
-          <label>Looping arrow<input aria-label="Looping arrow label" maxLength={2000} value={selectedNode.loopContinueLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopContinueLabel:event.target.value||undefined}}}));setProjectDirty(true);}}/></label>
-          <label>Exit arrow<input aria-label="Exit arrow label" maxLength={2000} value={selectedNode.loopExitLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopExitLabel:event.target.value||undefined}}}));setProjectDirty(true);}}/></label>
+          <label>Looping arrow<input aria-label="Looping arrow label" maxLength={2000} value={selectedNode.loopContinueLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopContinueLabel:event.target.value||undefined}}}),'loopContinueLabel');setProjectDirty(true);}}/></label>
+          <label>Exit arrow<input aria-label="Exit arrow label" maxLength={2000} value={selectedNode.loopExitLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopExitLabel:event.target.value||undefined}}}),'loopExitLabel');setProjectDirty(true);}}/></label>
           </>}
         </div>}
         <label>{mode==='code'?'Code label':'Natural language label'}<textarea aria-label="Box label" maxLength={2000} value={selectedNode.label} onChange={e=>editNode(mode,e.target.value)}/></label>

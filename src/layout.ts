@@ -14,6 +14,7 @@ export type FlowEdgeData = Record<string, unknown> & {
   labelPosition: RoutePoint;
   sourceOrigin: RoutePoint;
   targetOrigin: RoutePoint;
+  routingObstacles?: string[];
 };
 export type CanvasEdge = Edge<FlowEdgeData, "flowEdge">;
 const elk = new ELK();

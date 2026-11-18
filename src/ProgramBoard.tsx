@@ -49,7 +49,7 @@ export type ProgramBoardProps = {
   onExportReady?: (svg: string, render?: (palette:SvgPalette)=>string) => void;
 };
 
-type Result = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; diagram: ProgramDiagram };
+type Result = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; diagram: ProgramDiagram; generation: number };
 type GroupData = Record<string, unknown> & { diagram: ProgramDiagram; state: Result["state"]; onSelect: (selection: ProgramSelection) => void };
 type GroupNode = Node<GroupData, "programGroup">;
 type BoardNode = GroupNode | CanvasNode;
@@ -94,6 +94,18 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   const onSelectRef = useRef(onSelect); onSelectRef.current = onSelect;
   const selectGroup = useCallback((selection: ProgramSelection) => onSelectRef.current(selection), []);
   const analysisGeneration = useRef(0), referenceGeneration = useRef(0);
+  const pendingBoxDrags = useRef(new Map<string, number>());
+  const draggingRef = useRef(false);
+  const queuedResults = useRef<Array<{ generation: number; update: (current: Record<string, Result>) => Record<string, Result> }>>([]);
+  const updateResults = useCallback((generation: number, update: (current: Record<string, Result>) => Record<string, Result>) => {
+    if (draggingRef.current) queuedResults.current.push({ generation, update });
+    else setResults(update);
+  }, []);
+  const flushResults = useCallback(() => {
+    const queued = queuedResults.current.filter(item => item.generation === analysisGeneration.current);
+    queuedResults.current = [];
+    if (queued.length) setResults(current => queued.reduce((value, item) => item.update(value), current));
+  }, []);
   const activeAnalyses = useRef(0), analysisWaiters = useRef<Array<() => void>>([]);
   const flow = useRef<ReactFlowInstance<BoardNode> | null>(null), lastFittedMembership = useRef("");
   const members = useMemo(() => functions.map((info) => ({ info, id: programGroupId(info) })), [functions]);
@@ -135,7 +147,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
     setRendering(true);
     if (lastParseIdentity.current !== parseIdentity) {
       lastParseIdentity.current = parseIdentity;
-      setResults(Object.fromEntries(members.map((item) => [item.id, { state: "loading" } satisfies Result])));
+      updateResults(generation, () => Object.fromEntries(members.map((item) => [item.id, { state: "loading" } satisfies Result])));
     }
     let next = 0;
     const analyze = async (item: typeof members[number]): Promise<Result> => {
@@ -156,7 +168,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
         const laidOut=positionedCanvas(layout.nodes,layout.edges,labels);
         const edges = laidOut.edges.map((edge) => ({ ...edge, label: labels.get(edge.id) || undefined }));
         const size = programBounds(laidOut.nodes);
-        return { state: "ready", diagram: { id: item.id, info: item.info, width: size.width, height: size.height, nodes: laidOut.nodes, edges, position: positions[item.info.id] } };
+        return { state: "ready", generation, diagram: { id: item.id, info: item.info, width: size.width, height: size.height, nodes: laidOut.nodes, edges, position: positions[item.info.id] } };
       } catch (cause) {
         return { state: "error", message: cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "Analysis failed" };
       }
@@ -171,12 +183,12 @@ export default function ProgramBoard(props: ProgramBoardProps) {
         try { result = await analyze(item); }
         finally { release(); }
         if (generation !== analysisGeneration.current) return;
-        setResults((current) => ({ ...current, [item.id]: result }));
+        updateResults(generation, (current) => ({ ...current, [item.id]: result }));
       }
     };
     void Promise.all(Array.from({ length: Math.min(4, members.length) }, worker)).then(() => { if (generation === analysisGeneration.current) setRendering(false); });
     return () => { if (analysisGeneration.current === generation) analysisGeneration.current += 1; };
-  }, [analysisKey, acquireAnalysisSlot]);
+  }, [analysisKey, acquireAnalysisSlot, updateResults]);
 
   useEffect(() => {
     const generation = ++referenceGeneration.current;
@@ -199,20 +211,31 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   const arranged = useMemo(() => arrangeProgramGroups(diagrams, 72, 1800, calls), [diagrams, calls]);
 
   useEffect(() => {
+    if (dragging) return;
     setNodes((current) => {
-      const live = new Map(current.filter((node) => node.type === "programGroup").map((node) => [node.id, node.position]));
+      const live = new Map(current.map((node) => [node.id, node.position]));
       return diagrams.flatMap((diagram): BoardNode[] => {
         const result = results[diagram.id] ?? { state: "loading" };
         const saved = positions[diagram.info.id];
         const position = saved ?? (allSettled ? arranged[diagram.id] : live.get(diagram.id) ?? arranged[diagram.id]);
-        const group: GroupNode = { id: diagram.id, type: "programGroup", position, width: diagram.width, height: diagram.height, style: { width: diagram.width, height: diagram.height }, data: { diagram, state: result.state, onSelect: selectGroup }, selected: selectedFunctionId === diagram.info.id && !selectedNodeId, zIndex: 0 };
+        const preserveSize = result.state === "ready" && [...pendingBoxDrags.current].some(([id, generation]) => id.startsWith(`${diagram.id}/`) && result.generation <= generation);
+        const liveGroup = preserveSize ? current.find(node => node.id === diagram.id) : undefined;
+        const width = Math.max(diagram.width, liveGroup?.width ?? 0), height = Math.max(diagram.height, liveGroup?.height ?? 0);
+        const group: GroupNode = { id: diagram.id, type: "programGroup", position, width, height, style: { width, height }, data: { diagram, state: result.state, onSelect: selectGroup }, selected: selectedFunctionId === diagram.info.id && !selectedNodeId, zIndex: 0 };
         if (result.state !== "ready") return [group];
         const namespaced = namespaceProgramDiagram(diagram.id, diagram.nodes, diagram.edges);
-        const children = namespaced.nodes.map((node, index): CanvasNode => ({ ...node, position: { x: diagram.nodes[index].position.x + GROUP_PADDING, y: diagram.nodes[index].position.y + HEADER_HEIGHT }, parentId: diagram.id, draggable: true, selectable: true, selected: selectedFunctionId === diagram.info.id && selectedNodeId === diagram.nodes[index].data.flow.id, zIndex: 2 }));
+        const children = namespaced.nodes.map((node, index): CanvasNode => {
+          const pending = pendingBoxDrags.current.get(node.id);
+          const position = pending !== undefined && result.generation <= pending
+            ? live.get(node.id) ?? { x: diagram.nodes[index].position.x + GROUP_PADDING, y: diagram.nodes[index].position.y + HEADER_HEIGHT }
+            : { x: diagram.nodes[index].position.x + GROUP_PADDING, y: diagram.nodes[index].position.y + HEADER_HEIGHT };
+          if (pending !== undefined && result.generation > pending) pendingBoxDrags.current.delete(node.id);
+          return { ...node, position, parentId: diagram.id, draggable: true, selectable: true, selected: selectedFunctionId === diagram.info.id && selectedNodeId === diagram.nodes[index].data.flow.id, zIndex: 2 };
+        });
         return [group, ...children];
       });
     });
-  }, [diagrams, results, positions, arranged, allSettled, selectGroup, selectedFunctionId, selectedNodeId]);
+  }, [diagrams, results, positions, arranged, allSettled, selectGroup, selectedFunctionId, selectedNodeId, dragging]);
 
   const [guides,setGuides]=useState<AlignmentGuide[]>([]);
   const liveDiagrams=useMemo(()=>diagrams.map(diagram=>{
@@ -302,7 +325,7 @@ export default function ProgramBoard(props: ProgramBoardProps) {
   const ready = Object.values(results).filter((result) => result.state === "ready").length;
   const errors = Object.values(results).filter((result) => result.state === "error").length;
   return <section className={`program-board mode-${mode}`} aria-label="Whole program flowchart">
-    {members.length ? <ReactFlow<BoardNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={(instance) => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeDragStart={()=>setDragging(true)} onNodeDrag={dragBox} onNodeDragStop={(event,node)=>{setDragging(false);if(node.type==='programGroup'){persist(event,node);return;}const position=dragBox(event,node);setGuides([]);const group=diagrams.find(item=>item.id===node.parentId);if(position&&group)onBoxPosition(group.info.id,node,position);}} onNodeClick={selectNode} onPaneClick={onClearSelection} nodesConnectable={false} nodesDraggable minZoom={.05} maxZoom={1.6} proOptions={{ hideAttribution: true }}>
+    {members.length ? <ReactFlow<BoardNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onInit={(instance) => { flow.current = instance; }} onNodesChange={onNodesChange} onNodeDragStart={()=>{draggingRef.current=true;setDragging(true);}} onNodeDrag={dragBox} onNodeDragStop={(event,node)=>{draggingRef.current=false;flushResults();setDragging(false);if(node.type==='programGroup'){persist(event,node);return;}const position=dragBox(event,node);setGuides([]);const group=diagrams.find(item=>item.id===node.parentId);if(position&&group){pendingBoxDrags.current.set(node.id,analysisGeneration.current);onBoxPosition(group.info.id,node,position);}}} onNodeClick={selectNode} onPaneClick={onClearSelection} nodesConnectable={false} nodesDraggable minZoom={.05} maxZoom={1.6} proOptions={{ hideAttribution: true }}>
       <AlignmentGuides guides={guides}/>
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="var(--line)" />
       <Controls showInteractive={false} position="bottom-right" />
