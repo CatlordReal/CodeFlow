@@ -1,3 +1,4 @@
+import {serializeProject} from './projectSerialization';
 import type {ChartState} from './history';
 import type {FlowGraph, FlowNode, FunctionInfo} from './types';
 import {overviewIdentityNodes} from './simplify';
@@ -8,6 +9,7 @@ export type FunctionMapping = {
   detail:Map<string,string>;
   overview:Map<string,string>;
   loops:Map<string,string>;
+  collapsedLoops?:Map<string,string>;
   overviewSourceIds?:Set<string>;
   overviewTargetIds?:Set<string>;
 };
@@ -47,9 +49,23 @@ export function mapFunction(before:string,after:string,oldGraph:FlowGraph,newGra
   const signature=(graph:FlowGraph)=>{const indexes=new Map(graph.nodes.map((node,index)=>[node.id,index]));return JSON.stringify([graph.nodes.map(node=>identity(node,false)),graph.edges.map(edge=>[indexes.get(edge.source),indexes.get(edge.target),edge.label])]);};
   const unchanged=signature(oldGraph)===signature(newGraph);
   const oldOverview=overviewIdentityNodes(oldGraph),newOverview=overviewIdentityNodes(newGraph);
-  return {before,after,detail:matchNodes(oldGraph.nodes,newGraph.nodes,true,unchanged),
+  const oldLoops=oldGraph.nodes.filter(n=>n.kind==='loop'),newLoops=newGraph.nodes.filter(n=>n.kind==='loop');
+  const loops=matchNodes(oldLoops,newLoops,true,unchanged);
+  // Repeated headers can still be identified safely when their whole bodies differ.
+  for(const old of oldLoops){
+    if(loops.has(old.id))continue;
+    const candidates=oldLoops.filter(node=>identity(node,true)===identity(old,true)&&identity(node,false)===identity(old,false));
+    const targets=newLoops.filter(node=>identity(node,true)===identity(old,true)&&identity(node,false)===identity(old,false));
+    if(candidates.length===1&&targets.length===1&&!Array.from(loops.values()).includes(targets[0].id))loops.set(old.id,targets[0].id);
+  }
+  const oldCollapsed=new Set(oldOverview.filter(node=>node.loop_collapsed).map(node=>node.id));
+  const newCollapsed=new Set(newOverview.filter(node=>node.loop_collapsed).map(node=>node.id));
+  const collapsedLoops=new Map([...loops].filter(([oldId,newId])=>oldCollapsed.has(oldId)&&newCollapsed.has(newId)));
+  const detail=matchNodes(oldGraph.nodes,newGraph.nodes,true,unchanged);
+  for(const [oldId,newId] of loops) detail.set(oldId,newId);
+  return {before,after,collapsedLoops,detail,
     overview:matchNodes(oldOverview,newOverview,false,unchanged),
-    loops:matchNodes(oldGraph.nodes.filter(n=>n.kind==='loop'),newGraph.nodes.filter(n=>n.kind==='loop'),true,unchanged),
+    loops,
     overviewSourceIds:new Set(oldOverview.map(node=>node.id)),overviewTargetIds:new Set(newOverview.map(node=>node.id))};
 }
 export function remapChart(state:ChartState,mappings:FunctionMapping[]):ChartState{
@@ -61,9 +77,19 @@ export function remapChart(state:ChartState,mappings:FunctionMapping[]):ChartSta
         if(state.captions[oldKey]?.[oldId]!==undefined) (captions[newKey]??={})[newId]=state.captions[oldKey][oldId];
       }
     }
+    // A body edit changes a collapsed box's caption identity, not its loop header.
+    // Retain structural presentation, while discarding captions tied to old code.
+    const oldOverviewKey=`${mapping.before}:overview`,newOverviewKey=`${mapping.after}:overview`;
+    for(const [oldId,newId] of mapping.collapsedLoops??[]){
+      if(mapping.overview.has(oldId))continue;
+      const prior=state.edits[oldOverviewKey]?.[oldId];
+      if(prior){const {code: _code,natural: _natural,...structural}=prior;
+        if(Object.keys(structural).length)(edits[newOverviewKey]??={})[newId]=structural;
+      }
+    }
     for(const [oldId,newId] of mapping.loops)if(state.loopOverrides[mapping.before]?.[oldId]!==undefined)(loopOverrides[mapping.after]??={})[newId]=state.loopOverrides[mapping.before][oldId];
     const hidden=(state.hiddenBoxes[mapping.before]??[]).flatMap(id=>{
-      if(mapping.overviewSourceIds?.has(id))return mapping.overview.has(id)?[mapping.overview.get(id)!]:[];
+      if(mapping.overviewSourceIds?.has(id)){const target=mapping.overview.get(id)??mapping.collapsedLoops?.get(id);return target?[target]:[];}
       const target=mapping.detail.get(id);
       return target&&!mapping.overviewTargetIds?.has(target)?[target]:[];
     });
@@ -105,7 +131,8 @@ export function restoreArchivedHistory(
       edits: mergeRecords(saved.edits, state.edits),
       captions: mergeRecords(saved.captions, state.captions),
       loopOverrides: mergeRecords(saved.loopOverrides, state.loopOverrides),
-      hiddenBoxes: { ...saved.hiddenBoxes, ...state.hiddenBoxes },
+      hiddenBoxes: Object.fromEntries([...new Set([...Object.keys(saved.hiddenBoxes), ...Object.keys(state.hiddenBoxes)])].map(key =>
+        [key, [...new Set([...(saved.hiddenBoxes[key] ?? []), ...(state.hiddenBoxes[key] ?? [])])]])),
       functionPositions: { ...saved.functionPositions, ...state.functionPositions },
     } };
   }) };
@@ -118,8 +145,10 @@ export function retainSourceHistory(
 ): { archives: import('./presentation').SourceHistoryArchive[]; trimmed: number } {
   const budget = 16 * 1024 * 1024 - 256 * 1024;
   const encoder = new TextEncoder();
-  const fits = (archives: import('./presentation').SourceHistoryArchive[]) =>
-    encoder.encode(JSON.stringify({ ...project, sourceHistory: archives }, null, 2)).length <= budget;
+  const fits = (archives: import('./presentation').SourceHistoryArchive[]) => {
+    try { return encoder.encode(serializeProject({ ...project, sourceHistory: archives }, true)).length <= budget; }
+    catch (error) { if(error instanceof Error && error.message.startsWith('Project is larger than 16 MB.')) return false; throw error; }
+  };
   const archives = [latest];
   if (!fits(archives)) throw new Error('Cannot preserve this source change safely. Undo the source edit or save a project copy first.');
   let trimmed = 0;

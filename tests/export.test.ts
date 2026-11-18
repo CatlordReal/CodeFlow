@@ -20,6 +20,9 @@ assert(outsideViewBox[0] < -350 && outsideViewBox[1] < -150, 'export includes la
 assert(outsideLabel.includes('class="cf-edge-label-halo"') && outsideLabel.includes('class="cf-edge-label-text"'), 'edge text is painted separately above its halo');
 assert(!outsideLabel.includes('paint-order:'), 'edge labels do not rely on SVG paint-order support');
 
+const transparentSvg=createSvgDocument(nodes,[],"code",{...palette,background:'transparent'});
+assert(transparentSvg.includes('fill="transparent"'), 'transparent SVG retains alpha in background');
+assert(transparentSvg.includes('fill:#111111;stroke:#121212'), 'transparent background preserves box colors');
 assert(svg.includes('fill="#010203"'), "export uses opaque selected-theme background");
 for (const color of Object.values(palette)) assert(svg.includes(color), `export uses selected palette color ${color}`);
 assert(svg.includes(".cf-node-process>rect") && svg.includes("fill:#111111;stroke:#121212"));

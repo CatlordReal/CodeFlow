@@ -553,7 +553,19 @@ pub fn inspect(source: String) -> Vec<FunctionInfo> {
     let Ok(tree) = parse(&source) else {
         return Vec::new();
     };
-    definitions(&source, tree.root_node())
+    inspect_tree(&source, &tree)
+}
+
+pub fn inspect_checked(source: String) -> Result<Vec<FunctionInfo>, String> {
+    let tree = parse(&source)?;
+    if let Some(error) = diagnostics(&tree).into_iter().next() {
+        return Err(error);
+    }
+    Ok(inspect_tree(&source, &tree))
+}
+
+fn inspect_tree(source: &str, tree: &Tree) -> Vec<FunctionInfo> {
+    definitions(source, tree.root_node())
         .into_iter()
         .map(|definition| definition.info)
         .collect()
@@ -1384,6 +1396,17 @@ fn collect_diagnostics(node: Node<'_>, output: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_inspection_rejects_incomplete_source_and_accepts_valid_edits() {
+        for source in ["class C { int First() { return 1; } int Second() { return 2;", "class C { int First() { return 1; } }\n/* unfinished"] {
+            let error = inspect_checked(source.to_owned()).expect_err("incomplete source must fail");
+            assert!(error.contains("line"), "{error}");
+            assert!(!error.contains(source), "diagnostic must not contain source");
+        }
+        let source = "#nullable enable\n\n// comment\nclass C { int First() { while (true) { break; } return 1; } }";
+        assert!(!inspect_checked(source.to_owned()).unwrap().is_empty());
+    }
 
     fn sample() -> String {
         r#"

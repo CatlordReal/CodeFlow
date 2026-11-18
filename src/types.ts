@@ -31,6 +31,8 @@ export type FlowNode = {
   flaggedForUpdate?: boolean;
   loopContinueLabel?: string;
   loopExitLabel?: string;
+  trueLabel?: string;
+  falseLabel?: string;
   unmodified?: boolean;
   loop_id?: string;
   loop_depth?: number;

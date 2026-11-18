@@ -12,7 +12,7 @@ import {
 } from "@xyflow/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Update } from "@tauri-apps/plugin-updater";
-import { analyzeCpp, inspectCpp, openDocument, openRecentProject, recentProjects, readRecovery, saveRecovery, saveDocument, saveProjectDocument, type RecentProject } from "./api";
+import { analyzeCpp, inspectCpp, openDocument, openRecentProject, recentProjects, readRecovery, saveRecovery, saveDocument, saveProjectDocument, type RecentProject, discardRecovery, resumeRecovery, revealLastExport } from "./api";
 import FlowNodeCard from "./FlowNodeCard";
 import { createPngDataUrl, createSvgDocument, svgPaletteFromCss, svgPaletteFromTheme, type SvgPalette, svgDocumentName } from "./exportSvg";
 import { edgeTypes, layoutGraph, type CanvasNode, type CanvasEdge } from "./layout";
@@ -27,11 +27,13 @@ import "./editing.css";
 import {defaultChartState,useChartHistory,historyShortcut,historyTarget} from "./history";
 import HistoryPanel from "./HistoryPanel";
 import FunctionBoard from "./FunctionBoard";
-import {mapFunction,matchFunctions,remapChart,remapChartForLanguage,restoreArchivedHistory,retainSourceHistory,type FunctionMapping} from './preservation';
+import {mapFunction,matchFunctions,remapChart,remapChartForLanguage,retainSourceHistory,type FunctionMapping} from './preservation';
 import type {ChartState} from './history';
 import { SAMPLE_CPP } from "./sample";
 import type { FlowGraph, FunctionInfo, SourceLanguage, ChartView } from "./types";
 import { createDesktopCloseHandler } from "./close";
+import { CloseDialog, type CloseChoice } from "./CloseDialog";
+import { serializeProject } from "./projectSerialization";
 import { editorAwareCenter, functionViewportFitKey } from "./viewport";
 
 import AlignmentGuides from './AlignmentGuides';
@@ -47,7 +49,7 @@ type UpdateStatus = {
   progress?: number;
 };
 
-type DocumentStatus = { kind: "idle" | "success" | "info" | "error"; message: string };
+type DocumentStatus = { kind: "idle" | "success" | "info" | "error"; message: string; action?: 'reveal-export' };
 
 function Icon({ name }: { name: "file" | "export" | "refresh" | "save" | "update" | "close" }) {
   const paths = {
@@ -62,14 +64,18 @@ function Icon({ name }: { name: "file" | "export" | "refresh" | "save" | "update
 }
 
 export default function App() {
-  const [source, setSource] = useState(SAMPLE_CPP);
+  const {state:chart,history,change,changeFields,load:loadHistory,select:selectRevision,navigate:navigateHistory,reset:resetChart,alternate:createAlternate,transformHistory,markSaved,error:historyError,clearError:clearHistoryError}=useChartHistory({...defaultChartState(),source:SAMPLE_CPP,labelSource:SAMPLE_CPP,language:'cpp'});
+  const source=chart.source??SAMPLE_CPP;
+  const language=chart.language??'cpp';
   const [fileName, setFileName] = useState("untitled.cpp");
   const [isDirty, setIsDirty] = useState(true);
   const [functions, setFunctions] = useState<FunctionInfo[]>([]);
   const [selectedFunction, setSelectedFunction] = useState("");
   const [inspectedSource, setInspectedSource] = useState("");
+  const [inspectedLanguage,setInspectedLanguage]=useState<SourceLanguage>('cpp');
+  const [pendingInspection,setPendingInspection]=useState<{request:number;session:number;source:string;language:SourceLanguage;functions:FunctionInfo[];pairs:[FunctionInfo,FunctionInfo][]}|null>(null);
+  const [exportTransparent,setExportTransparent]=useState(false);
   const [exportTheme,setExportTheme]=useState<ThemeId | 'current'>('current');
-  const {state:chart,history,change,changeFields,load:loadHistory,select:selectRevision,navigate:navigateHistory,reset:resetChart,alternate:createAlternate,remap:remapHistory,transformHistory,markSaved}=useChartHistory();
   const {loopDepth,loopOverrides,mode,edits,captions,hiddenBoxes,showHiddenBoxes,functionPositions,includeComments,showLoopLabels}=chart;
   const expandLoops=loopDepth===null;
   const setLoopOverrides=(value:LoopOverrides|((v:LoopOverrides)=>LoopOverrides))=>change('loopOverrides',value,'Loop expansion');
@@ -77,7 +83,6 @@ export default function App() {
   const setEdits=(value:ChartEdits|((v:ChartEdits)=>ChartEdits),field?:string)=>change('edits',value,'Edit box',field?`edit:${selectedFunction}:${selectedNodeId}:${field}`:undefined);
   const setCaptions=(value:CaptionSets|((v:CaptionSets)=>CaptionSets))=>change('captions',value,'AI captions');
   const [showHistory,setShowHistory]=useState(false);
-  const [language,setLanguage]=useState<SourceLanguage>('cpp');
   const [chartView,setChartView]=useState<ChartView>('function');
   const fileView=chartView==='file', boardView=chartView!=='function';
   const [highlightUnmodified,setHighlightUnmodified]=useState(false);
@@ -89,6 +94,7 @@ export default function App() {
   const labelLibrary=useRef<{source:string;language:SourceLanguage;functions:FunctionInfo[];state:ChartState}[]>([]);
   const chartRef=useRef(chart);chartRef.current=chart;
   const libraryLoaded=useRef(false);
+  const pastedSource=useRef(false);
   const projectToken=useRef<string|null>(null),documentSession=useRef(0),savingProject=useRef(false);
   const [recoveryReady,setRecoveryReady]=useState(false);
   const recoveryReadyRef=useRef(false);
@@ -106,6 +112,7 @@ export default function App() {
   const draggingBox = useRef(false);
   const [layoutEpoch,setLayoutEpoch]=useState(0);
   const [graphSource, setGraphSource] = useState('');
+  const [graphLanguage,setGraphLanguage]=useState<SourceLanguage>('cpp');
   const [graphFunction, setGraphFunction] = useState('');
   const openRequest = useRef(0);
   const [graph, setGraph] = useState<FlowGraph>({ nodes: [], edges: [], diagnostics: [] });
@@ -124,6 +131,7 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState<{ currentVersion: string; version: string; body?: string } | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [documentStatus, setDocumentStatus] = useState<DocumentStatus>({ kind: "idle", message: "" });
+  useEffect(()=>{if(historyError){setDocumentStatus({kind:'error',message:historyError});clearHistoryError();}},[historyError,clearHistoryError]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -133,22 +141,26 @@ export default function App() {
   const updateRef = useRef<Update | null>(null);
   const updateDialogRef = useRef<HTMLElement>(null);
   const closeHandlerRef = useRef<(() => Promise<void>) | null>(null);
+  const [closeChoiceOpen,setCloseChoiceOpen]=useState(false);
+  const closeChoice=useRef<((choice:CloseChoice)=>void)|null>(null);
+  const saveForClose=useRef<()=>Promise<boolean>>(async()=>false);
+  const finishCloseChoice=(choice:CloseChoice)=>{const resolve=closeChoice.current;closeChoice.current=null;setCloseChoiceOpen(false);resolve?.(choice);};
   const sourceRef = useRef(source);
   const saveRequest = useRef(0);
-  const replaceSource=useCallback((text:string)=>{inspectRequest.current++;analyzeRequest.current++;layoutRequest.current++;sourceRef.current=text;setSource(text);},[]);
+  const replaceSource=useCallback((text:string)=>{inspectRequest.current++;analyzeRequest.current++;layoutRequest.current++;sourceRef.current=text;},[]);
   const isDesktop = "__TAURI_INTERNALS__" in window;
   sourceRef.current = source;dirtyRef.current=isDirty||projectDirty;sourceDirtyRef.current=isDirty;projectDirtyRef.current=projectDirty;recoveryReadyRef.current=recoveryReady;
   const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,showLoopLabels,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
-  projectRef.current = {format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,showLoopLabels,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,sourceHistory:sourceHistory.current,labelSource:baseline.current?.session===documentSession.current?baseline.current.source:source};
+  projectRef.current = {format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,showLoopLabels,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,sourceHistory:sourceHistory.current,labelSource:chart.labelSource??source};
   useEffect(()=>{document.documentElement.style.setProperty('--surface-opacity',`${100-transparency}%`);try{localStorage.setItem('codeflow.transparency',String(transparency));}catch{}},[transparency]);
   useEffect(()=>{if(documentStatus.kind!=='success')return;const timer=window.setTimeout(()=>setDocumentStatus({kind:'idle',message:''}),3000);return()=>clearTimeout(timer);},[documentStatus]);
   useEffect(()=>{void recentProjects().then(setRecent).catch(()=>undefined);},[]);
   useEffect(()=>{let active=true;const session=documentSession.current;void readRecovery().then(opened=>{
-    if(!active||!opened||documentSession.current!==session)return;const project=readProject(opened.contents);return inspectCpp(project.labelSource??project.source,project.language).then(savedFunctions=>{if(!active||documentSession.current!==session)return;baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session};projectToken.current=opened.projectToken??null;
-    replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');sourceHistory.current=project.sourceHistory??[];
-    loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions},project.history);setIsDirty(opened.sourceDirty??opened.dirty??true);setProjectDirty(opened.projectDirty??opened.dirty??true);});
-  }).catch(cause=>{if(active){recoveryError.current=false;setDocumentStatus({kind:'error',message:`Recovery could not be opened: ${readError(cause)}`});}}).finally(()=>{if(active)setRecoveryReady(true);});return()=>{active=false;};},[loadHistory]);
-  useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{void saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,showLoopLabels,isDirty,projectDirty,recoveryReady,language,chartView]);
+    if(!active||!opened||documentSession.current!==session)return;const project=readProject(opened.contents);return inspectCpp(project.labelSource??project.source,project.language).catch(()=>[]).then(savedFunctions=>{if(!active||documentSession.current!==session)return;baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session};projectToken.current=opened.projectToken??null;setFunctions(savedFunctions);setInspectedSource(project.labelSource??project.source);setInspectedLanguage(project.language??'cpp');setSelectedFunction(savedFunctions[0]?.id??'');
+    replaceSource(project.source);setFileName(project.fileName);setChartView(project.view??'function');sourceHistory.current=project.sourceHistory??[];
+    loadHistory({source:project.source,labelSource:project.labelSource??project.source,language:project.language??'cpp',mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions},project.history);setIsDirty(opened.sourceDirty??opened.dirty??true);setProjectDirty(opened.projectDirty??opened.dirty??true);});
+  }).catch(cause=>{if(active){recoveryError.current=true;setDocumentStatus({kind:'error',message:`Recovery could not be opened: ${readError(cause)}. Open a project or start a new one before autosave resumes.`});}}).finally(()=>{if(active)setRecoveryReady(true);});return()=>{active=false;};},[loadHistory]);
+  useEffect(()=>{if(!recoveryReady||recoveryError.current)return;const timer=window.setTimeout(()=>{try{void saveRecovery(serializeProject(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current).catch(cause=>setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`}));}catch(cause){setDocumentStatus({kind:'error',message:`Recovery save failed: ${readError(cause)}`});}},700);return()=>clearTimeout(timer);},[source,fileName,mode,edits,captions,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history,includeComments,showLoopLabels,isDirty,projectDirty,recoveryReady,language,chartView]);
 
   useEffect(() => {
     if(isDesktop) return;
@@ -158,12 +170,14 @@ export default function App() {
   useEffect(() => {
     if(!isDesktop) return;
     let disposed=false; let unlisten: (()=>void) | undefined;
-    void Promise.all([import('@tauri-apps/api/window'),import('@tauri-apps/plugin-dialog')]).then(([{getCurrentWindow},{confirm}])=>{
+    void import('@tauri-apps/api/window').then(({getCurrentWindow})=>{
       const appWindow=getCurrentWindow();
       closeHandlerRef.current=createDesktopCloseHandler({
         recoveryReady:()=>recoveryReadyRef.current,
-        snapshot:()=>({contents:JSON.stringify(projectRef.current),projectToken:projectToken.current,dirty:dirtyRef.current,sourceDirty:sourceDirtyRef.current,projectDirty:projectDirtyRef.current}),
-        confirm:()=>confirm('Close with unsaved work? Recovery will keep source, captions and notes.',{title:'Close CodeFlow',kind:'warning',okLabel:'Close',cancelLabel:'Keep open'}),
+        snapshot:()=>({contents:serializeProject(projectRef.current),projectToken:projectToken.current,dirty:dirtyRef.current,sourceDirty:sourceDirtyRef.current,projectDirty:projectDirtyRef.current}),
+        choose:()=>new Promise<CloseChoice>(resolve=>{closeChoice.current=resolve;setCloseChoiceOpen(true);}),
+        save:()=>saveForClose.current(),
+        discardRecovery, resumeRecovery,
         saveRecovery:snapshot=>saveRecovery(snapshot.contents,snapshot.projectToken,snapshot.dirty,snapshot.sourceDirty,snapshot.projectDirty),
         destroy:()=>appWindow.destroy(),
         showError:message=>setDocumentStatus({kind:'error',message}),
@@ -175,135 +189,147 @@ export default function App() {
 
   useEffect(() => {
     if(!recoveryReady)return;
-    const request = ++inspectRequest.current;
-    const session=documentSession.current;
+    analyzeRequest.current++;layoutRequest.current++;
+    if((chart.labelSource??source)===source&&((inspectedSource===source&&inspectedLanguage===language)||(pendingInspection?.source===source&&pendingInspection.language===language))){setError('');setIsInspecting(false);return;}
+    const request=++inspectRequest.current, session=documentSession.current;
     setIsInspecting(true);
-    setInspectedSource("");
-    const timer = window.setTimeout(async () => {
-      let sourceHistoryTrimmed=0;
+    setSelectedNodeId('');setSelectedLine(null);
+    const timer=window.setTimeout(async()=>{
+      const valid=()=>request===inspectRequest.current&&sourceRef.current===source&&documentSession.current===session;
       try {
-        const found = await inspectCpp(source,language);
-        if (request !== inspectRequest.current || sourceRef.current!==source || documentSession.current!==session) return;
-        const previous=baseline.current;
-        const sameDocument=previous?.session===documentSession.current;
-        let selectedMatch:string|undefined;
-        if(found.length && previous && previous.source!==source && sameDocument && previous.language===language){
-          const oldState=chartRef.current;
-          const pairs=matchFunctions(previous.functions,found);
-          const mappings:FunctionMapping[]=[];
-          let valid=true;
-          try{
-            const editedFunctions=new Set((projectRef.current.history?.revisions.map(revision=>revision.state)??[oldState]).flatMap(state=>[...Object.keys(state.edits),...Object.keys(state.captions)].map(key=>key.replace(/:(?:overview|detail)$/,''))).concat(...(projectRef.current.history?.revisions.map(revision=>[...Object.keys(revision.state.loopOverrides),...Object.keys(revision.state.hiddenBoxes)])??[])));
-            for(const [oldFunction,newFunction] of pairs){
-              if(!editedFunctions.has(oldFunction.id)){mappings.push({before:oldFunction.id,after:newFunction.id,detail:new Map(),overview:new Map(),loops:new Map()});continue;}
-              const [oldGraph,newGraph]=await Promise.all([analyzeCpp(previous.source,oldFunction.id,true,language),analyzeCpp(source,newFunction.id,true,language)]);
-              mappings.push(mapFunction(oldFunction.id,newFunction.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));
-            }
-          }catch{valid=false;}
-          if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
-          if(valid){
-            labelLibrary.current=[{...previous,state:oldState},...labelLibrary.current].slice(0,10);
-            const returned=sourceHistory.current.find(item=>item.source===source&&item.language===language);
-            if(projectRef.current.history?.revisions.some(revision=>['edits','captions','loopOverrides','hiddenBoxes','functionPositions'].some(field=>Object.keys(revision.state[field as 'edits']).length))){
-              const retained=retainSourceHistory(projectRef.current,{source:previous.source,language,history:projectRef.current.history});
-              sourceHistory.current=retained.archives;sourceHistoryTrimmed=retained.trimmed;
-            }
-            transformHistory(current=>{
-              const mapped={...current,revisions:current.revisions.map(revision=>({...revision,state:remapChartForLanguage(revision.state,mappings,language)}))};
-              return returned?restoreArchivedHistory(mapped,returned,source,language):mapped;
-            });
-            selectedMatch=pairs.find(([oldFunction])=>oldFunction.id===selectedFunction)?.[1].id;
-          }else{
-            // Keep last valid identities while incomplete typing cannot be analyzed.
-            setFunctions(found);setInspectedSource(source);return;
-          }
+        const found=await inspectCpp(source,language);
+        if(!valid())return;
+        const state=chartRef.current, previousSource=state.labelSource??source;
+        let previousBasisValid=true;
+        let previousFunctions=found;
+        if(previousSource!==source){
+          try{previousFunctions=await inspectCpp(previousSource,language);}
+          catch{previousBasisValid=false;previousFunctions=await inspectCpp(previousSource,language,true);}
         }
-        if(found.length){
-          // Recent projects are an app-owned, local label library; never send source externally.
-          if(!libraryLoaded.current && isDesktop){
-            libraryLoaded.current=true;
-            for(const item of (await recentProjects()).slice(0,5))try{
-              const project=readProject((await openRecentProject(item.id)).contents);
-              if(!Object.keys(project.edits).length&&!Object.keys(project.captions).length)continue;
-              if((project.language??'cpp')!==language)continue;
-              const savedSource=project.labelSource??project.source;const savedFunctions=await inspectCpp(savedSource,language);
-              labelLibrary.current.push({source:savedSource,language,functions:savedFunctions,state:{mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions}});
-            }catch{/* A missing recent project must not block editing. */}
+        if(!valid())return;
+        const pairs=matchFunctions(previousFunctions,found);
+        const mappings:FunctionMapping[]=[];
+        let recalledEdits:ChartEdits={}, recalledCaptions:CaptionSets={};
+        if(previousSource!==source){
+          const edited=new Set([...Object.keys(state.edits),...Object.keys(state.captions)].map(key=>key.replace(/:(?:overview|detail)$/,''))
+            .concat(Object.keys(state.loopOverrides),Object.keys(state.hiddenBoxes),Object.keys(state.functionPositions)));
+          for(const [before,after] of pairs){
+            if(!edited.has(before.id)){mappings.push({before:before.id,after:after.id,detail:new Map(),overview:new Map(),loops:new Map()});continue;}
+            try {
+              const [oldGraph,newGraph]=await Promise.all([analyzeCpp(previousSource,before.id,true,language),analyzeCpp(source,after.id,true,language)]);
+              mappings.push(mapFunction(before.id,after.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));
+            }catch{
+              // An unsupported function must not stop other valid functions from updating.
+              mappings.push({before:before.id,after:after.id,detail:new Map(),overview:new Map(),loops:new Map()});
+            }
           }
-          const candidates=labelLibrary.current.filter(candidate=>candidate.language===language&&candidate.source!==source);
-          for(const candidate of candidates){
-            const pairs=matchFunctions(candidate.functions,found).filter(([item])=>Object.keys(candidate.state.edits).some(key=>key.startsWith(item.id+':'))||Object.keys(candidate.state.captions).some(key=>key.startsWith(item.id+':')));if(!pairs.length)continue;
+          if(!valid())return;
+          labelLibrary.current=[{source:previousSource,language,functions:previousFunctions,state},...labelLibrary.current].slice(0,10);
+
+        }
+        // Reuse captions from prior projects only on a fresh document, never overwrite undo snapshots.
+        if(!libraryLoaded.current&&isDesktop){
+          libraryLoaded.current=true;
+          for(const item of (await recentProjects()).slice(0,5))try{
+            const project=readProject((await openRecentProject(item.id)).contents);
+            if((project.language??'cpp')!==language||(!Object.keys(project.edits).length&&!Object.keys(project.captions).length))continue;
+            const savedSource=project.labelSource??project.source, savedFunctions=await inspectCpp(savedSource,language);
+            labelLibrary.current.push({source:savedSource,language,functions:savedFunctions,state:{...defaultChartState(),...project,source:savedSource,labelSource:savedSource,language}});
+          }catch{/* Missing projects must not block source editing. */}
+        }
+        if(!valid())return;
+        if(pastedSource.current){
+          pastedSource.current=false;
+          for(const candidate of labelLibrary.current.filter(item=>item.language===language&&item.source!==source)){
+            const matches=matchFunctions(candidate.functions,found).filter(([item])=>Object.keys(candidate.state.edits).some(key=>key.startsWith(item.id+':'))||Object.keys(candidate.state.captions).some(key=>key.startsWith(item.id+':')));
+            if(!matches.length)continue;
             try{
-              const mappings:FunctionMapping[]=[];
-              for(const [oldFunction,newFunction] of pairs){const [oldGraph,newGraph]=await Promise.all([analyzeCpp(candidate.source,oldFunction.id,true,language),analyzeCpp(source,newFunction.id,true,language)]);mappings.push(mapFunction(oldFunction.id,newFunction.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));}
-              if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
-              const reused=remapChart(candidate.state,mappings);
-              if(!Object.keys(reused.edits).length&&!Object.keys(reused.captions).length)continue;
-              transformHistory(current=>({...current,revisions:current.revisions.map(revision=>revision.id===current.active?{...revision,state:{...revision.state,edits:mergeNodeRecords(reused.edits,revision.state.edits),captions:mergeNodeRecords(reused.captions,revision.state.captions)}}:revision)}));
-              if(Object.keys(reused.edits).length||Object.keys(reused.captions).length)setDocumentStatus({kind:'success',message:'Matching code labels restored.'});
-            }catch{/* Try the next saved version if this code is incomplete. */}
+              const reusedMappings:FunctionMapping[]=[];
+              for(const [before,after] of matches){
+                const [oldGraph,newGraph]=await Promise.all([analyzeCpp(candidate.source,before.id,true,language),analyzeCpp(source,after.id,true,language)]);
+                reusedMappings.push(mapFunction(before.id,after.id,simplifyGraph(oldGraph),simplifyGraph(newGraph)));
+              }
+              if(!valid())return;
+              const reused=remapChart(candidate.state,reusedMappings);
+              recalledEdits=mergeNodeRecords(reused.edits,recalledEdits);recalledCaptions=mergeNodeRecords(reused.captions,recalledCaptions);
+            }catch{/* A candidate must not block valid source inspection. */}
           }
         }
-        if(request!==inspectRequest.current||sourceRef.current!==source||documentSession.current!==session)return;
-        if(found.length)baseline.current={source,language,functions:found,session:documentSession.current};
-        setFunctions(found);
-        if(selectedMatch)setSelectedFunction(selectedMatch);
-        else setSelectedFunction((current) => found.some((item) => item.id === current) ? current : (found[0]?.id ?? ""));
-        setInspectedSource(source);
-        setError("");
-        if(sourceHistoryTrimmed)setDocumentStatus({kind:'info',message:'Older source snapshots trimmed to keep recovery within size limits.'});
-      } catch (cause) {
-        if (request !== inspectRequest.current || sourceRef.current!==source || documentSession.current!==session) return;
-        setFunctions([]);
-        setSelectedFunction("");
-        setInspectedSource(source);
-        setError(readError(cause));
-      } finally {
-        if (request === inspectRequest.current) setIsInspecting(false);
-      }
-    }, 260);
-    return () => window.clearTimeout(timer);
-  }, [source,recoveryReady,language]);
+        if(!valid())return;
+        if(!previousBasisValid&&projectRef.current.history){
+          // Keep all unmatched legacy records under their original source, never on unrelated new IDs.
+          const retained=retainSourceHistory(projectRef.current,{source:previousSource,language,history:projectRef.current.history});
+          sourceHistory.current=retained.archives;
+          setDocumentStatus({kind:'info',message:'Original labels retained in source history while the repaired chart updates.'});
+        }
+        setPendingInspection({request,session,source,language,functions:found,pairs});
+        if(previousSource!==source||Object.keys(recalledEdits).length||Object.keys(recalledCaptions).length)transformHistory(current=>({...current,revisions:current.revisions.map(revision=>{
+          if(revision.id!==current.active||revision.state.source!==source)return revision;
+          const basis=revision.state.labelSource??source;
+          if(basis!==previousSource&&basis!==source)return revision;
+          const mapped=basis===source?revision.state:remapChartForLanguage(revision.state,mappings,language);
+          return {...revision,state:{...mapped,source,labelSource:source,language,edits:mergeNodeRecords(recalledEdits,mapped.edits),captions:mergeNodeRecords(recalledCaptions,mapped.captions)}};
+        })}));
+      }catch(cause){
+        if(valid())setError(`${readError(cause)} Showing the last valid chart.`);
+      }finally{if(request===inspectRequest.current)setIsInspecting(false);}
+    },260);
+    return()=>window.clearTimeout(timer);
+  },[source,recoveryReady,language,chart.labelSource]);
+
+  useEffect(()=>{
+    if(!pendingInspection)return;
+    const pending=pendingInspection;
+    if(pending.request!==inspectRequest.current||pending.session!==documentSession.current||pending.source!==source||pending.language!==language){setPendingInspection(null);return;}
+    if((chart.labelSource??source)!==pending.source){
+      if(historyError){setError(`${historyError} Showing the last valid chart.`);setPendingInspection(null);}
+      return;
+    }
+    baseline.current={source:pending.source,language:pending.language,functions:pending.functions,session:pending.session};
+    setFunctions(pending.functions);
+    setSelectedFunction(current=>pending.pairs.find(([before])=>before.id===current)?.[1].id??(pending.functions.some(item=>item.id===current)?current:pending.functions[0]?.id??''));
+    setInspectedSource(pending.source);setInspectedLanguage(pending.language);setError('');setPendingInspection(null);
+  },[pendingInspection,source,language,chart.labelSource,historyError]);
 
   useEffect(() => {
     const request = ++analyzeRequest.current;
-    if (inspectedSource !== source || !selectedFunction) {
+    if (!selectedFunction) {
       setIsAnalyzing(false);
-      setGraph({ nodes: [], edges: [], diagnostics: [] });
-      setCanvasNodes([]);
-      setCanvasEdges([]);
+      if(inspectedSource===source&&!selectedFunction){setGraph({nodes:[],edges:[],diagnostics:[]});setGraphSource(source);setGraphFunction('');}
       return;
     }
     setIsAnalyzing(true);
     void (async () => {
       try {
-        const nextGraph = simplifyGraph(await analyzeCpp(source, selectedFunction, true,language));
+        const nextGraph = simplifyGraph(await analyzeCpp(inspectedSource, selectedFunction, true,inspectedLanguage));
         if (request !== analyzeRequest.current) return;
-        setGraph(nextGraph); setGraphSource(source); setGraphFunction(selectedFunction);
+        setGraph(nextGraph); setGraphSource(inspectedSource);setGraphLanguage(inspectedLanguage);setGraphFunction(selectedFunction);
 
         setError("");
-        window.setTimeout(() => void flowRef.current?.fitView({ padding: 0.18, duration: 350 }), 30);
+
       } catch (cause) {
         if (request !== analyzeRequest.current) return;
-        setError(readError(cause));
-        setGraph({ nodes: [], edges: [], diagnostics: [] });
-        setCanvasNodes([]);
-        setCanvasEdges([]);
+        setError(`${readError(cause)} Showing the last valid chart.`);
+
       } finally {
         if (request === analyzeRequest.current) setIsAnalyzing(false);
       }
     })();
-  }, [source, inspectedSource, selectedFunction, refreshKey,language]);
+  }, [inspectedSource, inspectedLanguage, selectedFunction, refreshKey]);
 
+  const presentationSource=boardView?inspectedSource:graphSource;
+  const presentedState=useRef(chart);
+  if((chart.labelSource??source)===presentationSource&&(chart.language??'cpp')===(boardView?inspectedLanguage:graphLanguage))presentedState.current=chart;
+  const shown=presentedState.current;
   const loops = useMemo(() => analyzeLoops(graph), [graph]);
-  const expandedGraph = useMemo(() => graphSource !== source || graphFunction !== selectedFunction ? {nodes:[],edges:[],diagnostics:[]} : overviewGraph(graph, {depth:loopDepth,overrides:loopOverrides[selectedFunction] ?? {}}), [graph,loopDepth,loopOverrides,graphSource,graphFunction,source,selectedFunction]);
-  const viewGraph=useMemo(()=>hideGraphNodes(expandedGraph,hiddenBoxes[selectedFunction]??[],showHiddenBoxes),[expandedGraph,hiddenBoxes,selectedFunction,showHiddenBoxes]);
-  const displayedGraph = useMemo(() => ({...viewGraph,nodes:viewGraph.nodes.map(node=> {
-    const key = nodePresentationKey(selectedFunction,node,loopDepth);
-    const presented=presentGraph({...viewGraph,nodes:[node]},mode,includeComments,edits[key],captions[key]).nodes[0];
-    return {...presented,unmodified:mode==='natural'&&highlightUnmodified&&edits[key]?.[node.id]?.natural===undefined&&captions[key]?.[node.id]===undefined};
-  })}), [viewGraph,mode,includeComments,edits,captions,selectedFunction,loopDepth,highlightUnmodified]);
-  const fitKey=functionViewportFitKey({source,functionId:selectedFunction,loopDepth,loopOverrides:loopOverrides[selectedFunction]??{},hiddenNodeIds:hiddenBoxes[selectedFunction]??[],showHiddenNodes:showHiddenBoxes});
+  const expandedGraph=useMemo(()=>overviewGraph(graph,{depth:shown.loopDepth,overrides:shown.loopOverrides[graphFunction]??{}}),[graph,shown.loopDepth,shown.loopOverrides,graphFunction]);
+  const viewGraph=useMemo(()=>hideGraphNodes(expandedGraph,shown.hiddenBoxes[graphFunction]??[],shown.showHiddenBoxes),[expandedGraph,shown.hiddenBoxes,graphFunction,shown.showHiddenBoxes]);
+  const displayedGraph=useMemo(()=>({...viewGraph,nodes:viewGraph.nodes.map(node=>{
+    const key=nodePresentationKey(graphFunction,node,shown.loopDepth);
+    const presented=presentGraph({...viewGraph,nodes:[node]},shown.mode,shown.includeComments,shown.edits[key],shown.captions[key]).nodes[0];
+    return {...presented,unmodified:shown.mode==='natural'&&highlightUnmodified&&shown.edits[key]?.[node.id]?.natural===undefined&&shown.captions[key]?.[node.id]===undefined};
+  })}),[viewGraph,shown,graphFunction,highlightUnmodified]);
+  const fitKey=functionViewportFitKey({source:graphSource,functionId:graphFunction,loopDepth:shown.loopDepth,loopOverrides:shown.loopOverrides[graphFunction]??{},hiddenNodeIds:shown.hiddenBoxes[graphFunction]??[],showHiddenNodes:shown.showHiddenBoxes});
   const lastFitKey=useRef('');
   useEffect(() => {
     const request = ++layoutRequest.current;
@@ -339,25 +365,28 @@ export default function App() {
   };
   const changeSource = (text: string) => {
     openRequest.current++;
-    setSelectedNodeId('');setSelectedLine(null);replaceSource(text); setIsDirty(true); setProjectDirty(true);
+    setSelectedNodeId('');setSelectedLine(null);change('source',text,'Edit source','source');setIsDirty(true);setProjectDirty(true);
   };
   const saveProject = async (saveAs=false) => {
-    if(savingProject.current)return;savingProject.current=true;
-    const session=documentSession.current;const snapshot=JSON.stringify(projectRef.current,null,2);
+    if(savingProject.current)return false;savingProject.current=true;
+    const session=documentSession.current;
     try {
+      const snapshot=serializeProject(projectRef.current,true);
       const saved=await saveProjectDocument(fileName.replace(/\.[^.]+$/,'')+'.codeflow',snapshot,saveAs?null:projectToken.current);
       if(saved.saved){
-        if(session===documentSession.current){projectToken.current=saved.projectToken??projectToken.current;const unchanged=JSON.stringify(projectRef.current,null,2)===snapshot;if(unchanged){setProjectDirty(false);setIsDirty(false);}markSaved();await saveRecovery(JSON.stringify(projectRef.current),projectToken.current,!unchanged,!unchanged&&sourceDirtyRef.current,!unchanged&&projectDirtyRef.current);}
-        setDocumentStatus({kind:saved.warning?'info':'success',message:saved.warning??'Project saved.'});void recentProjects().then(setRecent).catch(()=>undefined);
+        if(session===documentSession.current){projectToken.current=saved.projectToken??projectToken.current;const unchanged=serializeProject(projectRef.current,true)===snapshot;if(unchanged){setProjectDirty(false);setIsDirty(false);dirtyRef.current=false;sourceDirtyRef.current=false;projectDirtyRef.current=false;}markSaved();await saveRecovery(serializeProject(projectRef.current),projectToken.current,!unchanged,!unchanged&&sourceDirtyRef.current,!unchanged&&projectDirtyRef.current);}
+        setDocumentStatus({kind:saved.warning?'info':'success',message:saved.warning??'Project saved.'});void recentProjects().then(setRecent).catch(()=>undefined);return session===documentSession.current;
       }
     } catch(cause){setDocumentStatus({kind:'error',message:readError(cause)});}finally{savingProject.current=false;}
+    return false;
   };
+  saveForClose.current=()=>saveProject();
   const confirmReplace=async(message:string)=>isDesktop?(await import('@tauri-apps/plugin-dialog')).confirm(message,{title:'CodeFlow',kind:'warning'}):window.confirm(message);
   const newProject=async()=>{
     if((isDirty||projectDirty)&&!await confirmReplace('Start a new project? Save unsaved work first.'))return;
     if(baseline.current)labelLibrary.current=[{...baseline.current,state:chartRef.current},...labelLibrary.current].slice(0,10);
     sourceHistory.current=[];documentSession.current++;openRequest.current++;saveRequest.current++;projectToken.current=null;recoveryError.current=false;
-    replaceSource('');setFileName(language==='cpp'?'untitled.cpp':'untitled.cs');setChartView('function');loadHistory(defaultChartState());setIsDirty(false);setProjectDirty(false);setSelectedNodeId('');setSelectedLine(null);setDocumentStatus({kind:'idle',message:''});
+    replaceSource('');setFileName(language==='cpp'?'untitled.cpp':'untitled.cs');setChartView('function');loadHistory({...defaultChartState(),source:'',labelSource:'',language});setFunctions([]);setSelectedFunction('');setInspectedSource('');setGraph({nodes:[],edges:[],diagnostics:[]});setGraphSource('');setGraphFunction('');setIsDirty(false);setProjectDirty(false);setSelectedNodeId('');setSelectedLine(null);setDocumentStatus({kind:'idle',message:''});
   };
 
   const selectedName = functions.find((item) => item.id === selectedFunction)?.name ?? "flowchart";
@@ -381,13 +410,13 @@ export default function App() {
       saveRequest.current += 1;
       if(file.name.endsWith('.codeflow')) {
         const project = readProject(contents);
-        const savedFunctions=await inspectCpp(project.labelSource??project.source,project.language);if(request!==openRequest.current||JSON.stringify(projectRef.current)!==JSON.stringify(before))return;
-        baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session:documentSession.current+1};
-        replaceSource(project.source);setFileName(project.fileName);setLanguage(project.language??'cpp');setChartView(project.view??'function');sourceHistory.current=project.sourceHistory??[];
-        loadHistory({mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions},project.history);
+        const savedFunctions=await inspectCpp(project.labelSource??project.source,project.language).catch(()=>[]);if(request!==openRequest.current||serializeProject(projectRef.current)!==serializeProject(before))return;
+        baseline.current={source:project.labelSource??project.source,language:project.language??'cpp',functions:savedFunctions,session:documentSession.current+1};setFunctions(savedFunctions);setInspectedSource(project.labelSource??project.source);setInspectedLanguage(project.language??'cpp');setSelectedFunction(savedFunctions[0]?.id??'');
+        replaceSource(project.source);setFileName(project.fileName);setChartView(project.view??'function');sourceHistory.current=project.sourceHistory??[];
+        loadHistory({source:project.source,labelSource:project.labelSource??project.source,language:project.language??'cpp',mode:project.mode,edits:project.edits,captions:project.captions,loopDepth:project.loopDepth,loopOverrides:project.loopOverrides,hiddenBoxes:project.hiddenBoxes,showHiddenBoxes:project.showHiddenBoxes,includeComments:project.includeComments,showLoopLabels:project.showLoopLabels??true,functionPositions:project.functionPositions},project.history);
       } else {
         if(new TextEncoder().encode(contents).length > 2 * 1024 * 1024) throw new Error('Source must be smaller than 2 MB.');
-        sourceHistory.current=[];replaceSource(contents);setFileName(file.name);setLanguage(/\.cs$/i.test(file.name)?'csharp':'cpp');setChartView('function');loadHistory(defaultChartState());baseline.current=null;
+        sourceHistory.current=[];replaceSource(contents);setFileName(file.name);setChartView('function');loadHistory({...defaultChartState(),source:contents,labelSource:contents,language:/\.cs$/i.test(file.name)?'csharp':'cpp'});setFunctions([]);setSelectedFunction('');setInspectedSource('');setGraph({nodes:[],edges:[],diagnostics:[]});setGraphSource('');setGraphFunction('');baseline.current=null;
       }
       documentSession.current++;projectToken.current=token;recoveryError.current=false;
       setProjectDirty(false); setSelectedNodeId('');
@@ -401,9 +430,9 @@ export default function App() {
   const openChooser=async(id?:string)=>{
     if(!isDesktop){fileInputRef.current?.click();return;}
     if((isDirty||projectDirty)&&!await confirmReplace('Replace this document? Save unsaved work first.'))return;
-    const snapshot=JSON.stringify(projectRef.current);const request=++openRequest.current;
+    const snapshot=serializeProject(projectRef.current);const request=++openRequest.current;
     try{const opened=id?await openRecentProject(id):await openDocument();if(!opened)return;
-      if(request!==openRequest.current||JSON.stringify(projectRef.current)!==snapshot){setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'});return;}
+      if(request!==openRequest.current||serializeProject(projectRef.current)!==snapshot){setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'});return;}
       await openFile(new File([opened.contents],opened.name),opened.projectToken??null,true);if(opened.warning)setDocumentStatus({kind:'info',message:opened.warning});void recentProjects().then(setRecent).catch(()=>undefined);
     }catch(cause){setDocumentStatus({kind:'error',message:readError(cause)});}
   };
@@ -438,7 +467,7 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (showUpdateDialog) return;
+      if (showUpdateDialog||closeChoiceOpen) return;
       if(!recoveryReady)return;
       const direction=historyShortcut(event,event.target);
       if(direction){event.preventDefault();if(historyTarget(history,direction)){navigateHistory(direction);setProjectDirty(true);}return;}
@@ -463,7 +492,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [saveProject,openChooser,showUpdateDialog,recoveryReady,navigateHistory,history]);
+  }, [saveProject,openChooser,showUpdateDialog,recoveryReady,navigateHistory,history,closeChoiceOpen]);
 
   const checkForUpdates = useCallback(async () => {
     if (!isDesktop) {
@@ -542,7 +571,7 @@ export default function App() {
     let total: number | undefined;
     setUpdateStatus({ kind: "downloading", message: `Downloading version ${update.version}…`, progress: 0 });
     try {
-      await saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current);
+      await saveRecovery(serializeProject(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current);
       await update.download((event) => {
         if (event.event === "Started") total = event.data.contentLength;
         if (event.event === "Progress") downloaded += event.data.chunkLength;
@@ -554,7 +583,7 @@ export default function App() {
         setUpdateStatus({ kind: "downloading", message: progress === undefined ? "Downloading update…" : `Downloading update… ${progress}%`, progress });
       });
       setUpdateStatus({ kind: "installing", message: "Installing update…" });
-      await saveRecovery(JSON.stringify(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current);
+      await saveRecovery(serializeProject(projectRef.current),projectToken.current,dirtyRef.current,sourceDirtyRef.current,projectDirtyRef.current);
       await update.install({ restartAfterInstall: true });
       updateRef.current = null;
       setUpdateStatus({ kind: "current", message: "Update installed. Restart CodeFlow if it stays open." });
@@ -616,14 +645,14 @@ export default function App() {
   useEffect(()=>{
     const pending=pendingCode.current;if(!pending)return;
     if(pending.source!==source){pendingCode.current=null;return;}
-    if(inspectedSource!==source)return;
+    if(inspectedSource!==source||inspectedLanguage!==language)return;
     const info=functionAtByte(functions,pending.byte);if(!info){pendingCode.current=null;return;}
     if(fileView)setChartView('function');
     if(selectedFunction!==info.id){setSelectedFunction(info.id);return;}
     if(graphSource!==source||graphFunction!==info.id)return;
     const node=nodeAtByte(displayedGraph.nodes,pending.byte);pendingCode.current=null;
     if(node){setSelectedNodeId(node.id);setSelectedLine(node.line);}
-  },[source,sourceFocusRequest,functions,inspectedSource,graphSource,graphFunction,selectedFunction,displayedGraph,fileView]);
+  },[source,sourceFocusRequest,functions,inspectedSource,inspectedLanguage,language,graphSource,graphFunction,selectedFunction,displayedGraph,fileView]);
   const lastProgramSelection=useRef('');
   useEffect(()=>{
     if(chartView!=='program'||!selectedNodeId){lastProgramSelection.current='';return;}
@@ -637,19 +666,22 @@ export default function App() {
 
   const exportGraph = useCallback(async (format:'svg'|'png'='svg') => {
     const theme=THEMES.find(theme=>theme.id===exportTheme);
-    const palette=theme?svgPaletteFromTheme(theme):svgPaletteFromCss();
+    const basePalette=theme?svgPaletteFromTheme(theme):svgPaletteFromCss();
+    const palette={...basePalette,background:exportTransparent?'transparent':basePalette.background};
+    if(boardView&&exportTransparent&&!boardRenderer.current)return;
     const svg = boardView ? (boardRenderer.current?.(palette)??boardSvg) : createSvgDocument(canvasNodes, canvasEdges, mode,palette);
     if (!svg) return;
     try {
       const saved = await saveDocument(svgDocumentName(selectedName),format==='png'?await createPngDataUrl(svg):svg,format);
       setDocumentStatus(saved
-        ? { kind: "success", message: "Flowchart exported." }
+        ? { kind: "success", message: "Flowchart exported.", action: 'reveal-export' }
         : { kind: "info", message: "Export canceled." });
     } catch (cause) {
       setDocumentStatus({ kind: "error", message: `Export failed: ${readError(cause)}` });
     }
-  }, [canvasNodes, canvasEdges, selectedName, mode,boardView,boardSvg,exportTheme]);
+  }, [canvasNodes, canvasEdges, selectedName, mode,boardView,boardSvg,exportTheme,exportTransparent]);
 
+  const revealExport=()=>void revealLastExport().catch(cause=>setDocumentStatus({kind:'error',message:`Could not show export: ${readError(cause)}`}));
   const statusText = error
     ? error
     : isInspecting || isAnalyzing
@@ -665,13 +697,13 @@ export default function App() {
         setBoardSvg('');
         if(baseline.current)labelLibrary.current=[{...baseline.current,state:chartRef.current},...labelLibrary.current].slice(0,10);
         documentSession.current++;inspectRequest.current++;analyzeRequest.current++;baseline.current=null;libraryLoaded.current=false;
-        setLanguage(next);setFileName(name=>name.replace(/\.(?:cpp|cc|cxx|cs)$/i,next==='cpp'?'.cpp':'.cs'));
+        changeFields({source,labelSource:source,language:next},'Source language');setFileName(name=>name.replace(/\.(?:cpp|cc|cxx|cs)$/i,next==='cpp'?'.cpp':'.cs'));
         setFunctions([]);setSelectedFunction('');setInspectedSource('');setShowAI(false);clearSelection();setProjectDirty(true);
       }} recentProjects={recent} onNewProject={()=>void newProject()} onOpen={()=>void openChooser()} onOpenRecent={id=>void openChooser(id)}
         onSaveSource={()=>void saveSource()} onSaveProject={()=>void saveProject()} onSaveAs={()=>void saveProject(true)}
         onAnalyze={()=>setRefreshKey(value=>value+1)} onExportSvg={()=>void exportGraph()} onExportPng={()=>void exportGraph('png')}
         onCheckUpdates={()=>void checkForUpdates()} transparency={transparency} onTransparencyChange={setTransparency}
-        onFullscreenError={message=>setDocumentStatus({kind:'error',message})} exportTheme={exportTheme} onExportThemeChange={setExportTheme}
+        onFullscreenError={message=>setDocumentStatus({kind:'error',message})} exportTheme={exportTheme} onExportThemeChange={setExportTheme} exportTransparent={exportTransparent} onExportTransparentChange={setExportTransparent}
         recoveryReady={recoveryReady} exportReady={inspectedSource===source&&!isAnalyzing&&(boardView?!!boardSvg:graphSource===source&&graphFunction===selectedFunction&&canvasNodes.length>0)}
         updateBusy={['checking','downloading','installing'].includes(updateStatus.kind)}/>
       <input ref={fileInputRef} className="visually-hidden" type="file" accept=".codeflow,.cpp,.cc,.cxx,.h,.hh,.hpp,.hxx,.cs,text/plain" onChange={event=>void openFile(event.target.files?.[0])}/>
@@ -692,9 +724,9 @@ export default function App() {
       )}
 
       {documentStatus.kind !== "idle" && (
-        <aside className={`document-banner document-banner--${documentStatus.kind}`} role={documentStatus.kind === "error" ? "alert" : "status"} aria-live="polite">
-          <span>{documentStatus.message}</span>
-          <button className="icon-button" aria-label="Dismiss save status" onClick={() => setDocumentStatus({ kind: "idle", message: "" })}><Icon name="close" /></button>
+        <aside className={`document-banner document-banner--${documentStatus.kind}`} role={documentStatus.kind === "error" ? "alert" : "status"} aria-live="polite" onClick={documentStatus.action==='reveal-export'?revealExport:undefined}>
+          {documentStatus.action==='reveal-export'?<button className="document-banner__action" onClick={event=>{event.stopPropagation();revealExport();}} title="Show exported file">{documentStatus.message}</button>:<span>{documentStatus.message}</span>}
+          <button className="icon-button" aria-label="Dismiss save status" onClick={event=>{event.stopPropagation();setDocumentStatus({ kind: "idle", message: "" });}}><Icon name="close" /></button>
         </aside>
       )}
 
@@ -724,8 +756,10 @@ export default function App() {
               ref={textareaRef}
               aria-label={language==='cpp'?"C++ source code":"C# source code"}
               value={source}
+              data-document-history
               spellCheck={false}
               disabled={!recoveryReady}
+              onPaste={()=>{pastedSource.current=true;}}
               onChange={(event) => changeSource(event.target.value)}
               onClick={event=>clickCode(event.currentTarget)}
               onScroll={(event) => { if (gutterRef.current) gutterRef.current.scrollTop = event.currentTarget.scrollTop;setSourceScrollTop(event.currentTarget.scrollTop); }}
@@ -772,13 +806,13 @@ export default function App() {
             <label className="toggle"><input aria-label="Show hidden boxes" type="checkbox" checked={showHiddenBoxes} onChange={event=>{change('showHiddenBoxes',event.target.checked,'Show hidden boxes');setProjectDirty(true);}}/><span className="toggle__track"><span/></span><span>Show hidden boxes</span></label>
           </div>
 
-          <div className="chart-canvas">
-            {chartView==='program' && inspectedSource===source && functions.length ? <ProgramBoard source={source} language={language} functions={functions} mode={mode}
-              includeComments={includeComments} showLoopLabels={showLoopLabels} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes}
-              highlightUnmodified={highlightUnmodified} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange program');setProjectDirty(true);}}
+          <div className="chart-canvas" inert={inspectedSource!==source||inspectedLanguage!==language||isInspecting||isAnalyzing||(!boardView&&(graphSource!==source||graphFunction!==selectedFunction))} aria-busy={isInspecting||isAnalyzing}>
+            {chartView==='program' && functions.length ? <ProgramBoard source={inspectedSource} language={inspectedLanguage} functions={functions} mode={shown.mode}
+              includeComments={shown.includeComments} showLoopLabels={shown.showLoopLabels} loopDepth={shown.loopDepth} loopOverrides={shown.loopOverrides} edits={shown.edits} captions={shown.captions} hiddenBoxes={shown.hiddenBoxes} showHiddenBoxes={shown.showHiddenBoxes}
+              highlightUnmodified={highlightUnmodified} positions={shown.functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange program');setProjectDirty(true);}}
               onSelect={({functionId,nodeId})=>{setSelectedFunction(functionId);setSelectedNodeId(nodeId??'');setShowAI(false);if(!nodeId)setChartView('function');}}
               focusRequest={sourceFocusRequest} onBoxPosition={saveBoxPosition} selectedFunctionId={selectedFunction} selectedNodeId={selectedNodeId} onClearSelection={clearSelection}
-              onExportReady={onBoardExport}/> : fileView && inspectedSource===source && functions.length ? <FunctionBoard language={language} source={source} functions={functions} mode={mode} highlightUnmodified={highlightUnmodified} includeComments={includeComments} showLoopLabels={showLoopLabels} loopDepth={loopDepth} loopOverrides={loopOverrides} edits={edits} captions={captions} hiddenBoxes={hiddenBoxes} showHiddenBoxes={showHiddenBoxes} positions={functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange functions');setProjectDirty(true);}} onOpenFunction={id=>{setSelectedFunction(id);setChartView('function');clearSelection();}} onExportReady={onBoardExport}/> : canvasNodes.length > 0 ? (
+              onExportReady={onBoardExport}/> : fileView && functions.length ? <FunctionBoard language={inspectedLanguage} source={inspectedSource} functions={functions} mode={shown.mode} highlightUnmodified={highlightUnmodified} includeComments={shown.includeComments} showLoopLabels={shown.showLoopLabels} loopDepth={shown.loopDepth} loopOverrides={shown.loopOverrides} edits={shown.edits} captions={shown.captions} hiddenBoxes={shown.hiddenBoxes} showHiddenBoxes={shown.showHiddenBoxes} positions={shown.functionPositions} onPositions={next=>{change('functionPositions',next,'Arrange functions');setProjectDirty(true);}} onOpenFunction={id=>{setSelectedFunction(id);setChartView('function');clearSelection();}} onExportReady={onBoardExport}/> : canvasNodes.length > 0 ? (
               <ReactFlow<CanvasNode>
                 nodes={canvasNodes}
                 edges={canvasEdges}
@@ -836,6 +870,10 @@ export default function App() {
           <label>Exit arrow<input aria-label="Exit arrow label" maxLength={2000} value={selectedNode.loopExitLabel??''} placeholder="Default" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],loopExitLabel:event.target.value||undefined}}}),'loopExitLabel');setProjectDirty(true);}}/></label>
           </>}
         </div>}
+        {selectedNode.kind==='decision'&&<div className="loop-actions">
+          <label>True arrow<input aria-label="True arrow label" maxLength={2000} value={selectedNode.trueLabel??''} placeholder="True" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],trueLabel:event.target.value||undefined}}}),'trueLabel');setProjectDirty(true);}}/></label>
+          <label>False arrow<input aria-label="False arrow label" maxLength={2000} value={selectedNode.falseLabel??''} placeholder="False" onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],falseLabel:event.target.value||undefined}}}),'falseLabel');setProjectDirty(true);}}/></label>
+        </div>}
         <label>{mode==='code'?'Code label':'Natural language label'}<textarea aria-label="Box label" maxLength={2000} value={selectedNode.label} onChange={e=>editNode(mode,e.target.value)}/></label>
         <label className="flag-box"><input type="checkbox" checked={selectedNode.flagged??false} onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],flagged:event.target.checked}}}));setProjectDirty(true);}}/> Flag for removal</label>
         <label className="flag-box"><input type="checkbox" checked={selectedNode.flaggedForUpdate??false} onChange={event=>{setEdits(current=>({...current,[editKey]:{...current[editKey],[selectedNodeId]:{...current[editKey]?.[selectedNodeId],flaggedForUpdate:event.target.checked}}}));setProjectDirty(true);}}/> Flag for update</label>
@@ -855,6 +893,7 @@ export default function App() {
         </section>
       </section>
 
+      {closeChoiceOpen && <CloseDialog onChoose={finishCloseChoice}/>}
       {showHistory && <HistoryPanel history={history} onSelect={id=>{selectRevision(id);setProjectDirty(true);}} onClose={()=>setShowHistory(false)}/>}
       {showUpdateDialog && availableUpdate && (
         <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) dismissUpdate(); }}>

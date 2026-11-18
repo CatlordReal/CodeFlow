@@ -9,7 +9,10 @@ export type CloseRecoverySnapshot = {
 type CloseDependencies = {
   recoveryReady: () => boolean;
   snapshot: () => CloseRecoverySnapshot;
-  confirm: () => Promise<boolean>;
+  choose: () => Promise<"save" | "discard" | "cancel">;
+  save: () => Promise<boolean>;
+  discardRecovery: () => Promise<void>;
+  resumeRecovery: () => Promise<void>;
   saveRecovery: (snapshot: CloseRecoverySnapshot) => Promise<void>;
   destroy: () => Promise<void>;
   showError: (message: string) => void;
@@ -42,7 +45,28 @@ export function createDesktopCloseHandler(dependencies: CloseDependencies): () =
     closing = true;
     try {
       const initial = dependencies.snapshot();
-      if ((initial.dirty || initial.projectDirty) && !await dependencies.confirm()) return;
+      if (initial.dirty || initial.projectDirty) {
+        const choice = await dependencies.choose();
+        if (choice === "cancel") return;
+        if (choice === "discard") {
+          await dependencies.discardRecovery();
+          try {
+            await dependencies.destroy();
+          } catch (cause) {
+            await dependencies.resumeRecovery();
+            const latest = dependencies.snapshot();
+            await dependencies.saveRecovery(latest);
+            throw cause;
+          }
+          return;
+        }
+        const beforeSave = dependencies.snapshot();
+        if (!await dependencies.save()) return;
+        if (dependencies.snapshot().contents !== beforeSave.contents) {
+          dependencies.showError("Project changed while saving. Close again to save the latest changes.");
+          return;
+        }
+      }
 
       let saved = dependencies.snapshot();
       while (true) {

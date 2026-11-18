@@ -6,6 +6,7 @@ mod wallpaper;
 use serde::Deserialize;
 use std::io::Write;
 use tauri_plugin_dialog::DialogExt;
+use tauri::Manager;
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -15,11 +16,11 @@ enum SourceLanguage {
 }
 
 #[tauri::command]
-async fn inspect_cpp(source: String) -> Result<Vec<analyzer::FunctionInfo>, String> {
+async fn inspect_cpp(source: String, allow_incomplete: Option<bool>) -> Result<Vec<analyzer::FunctionInfo>, String> {
     validate_source(&source)?;
-    tauri::async_runtime::spawn_blocking(move || analyzer::inspect(source))
+    tauri::async_runtime::spawn_blocking(move || if allow_incomplete.unwrap_or(false) { Ok(analyzer::inspect(source)) } else { analyzer::inspect_checked(source) })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -48,14 +49,17 @@ async fn analyze_cpp(
 async fn inspect_code(
     source: String,
     language: SourceLanguage,
+    allow_incomplete: Option<bool>,
 ) -> Result<Vec<analyzer::FunctionInfo>, String> {
     validate_code_source(&source)?;
     tauri::async_runtime::spawn_blocking(move || match language {
-        SourceLanguage::Cpp => analyzer::inspect(source),
-        SourceLanguage::Csharp => csharp::inspect(source),
+        SourceLanguage::Cpp if allow_incomplete.unwrap_or(false) => Ok(analyzer::inspect(source)),
+        SourceLanguage::Csharp if allow_incomplete.unwrap_or(false) => Ok(csharp::inspect(source)),
+        SourceLanguage::Cpp => analyzer::inspect_checked(source),
+        SourceLanguage::Csharp => csharp::inspect_checked(source),
     })
     .await
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -180,10 +184,35 @@ async fn save_document(
         };
         let path = file.into_path().map_err(|error| error.to_string())?;
         persist_document(&path, &bytes)?;
+        if matches!(extension.as_str(), "svg" | "png") { app.state::<documents::DocumentState>().remember_export(path)?; }
         Ok(true)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn reveal_last_export(app: tauri::AppHandle) -> Result<(), String> {
+    let path=app.state::<documents::DocumentState>().last_export()?;
+    if !path.is_file() { return Err("The saved export no longer exists.".into()); }
+    tauri::async_runtime::spawn_blocking(move || reveal_export_path(&path)).await.map_err(|error| error.to_string())?
+}
+
+fn reveal_export_path(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os="macos")]
+    let status=std::process::Command::new("open").arg("-R").arg(path).status();
+    #[cfg(target_os="windows")]
+    let status={let mut arg=std::ffi::OsString::from("/select,");arg.push(path);std::process::Command::new("explorer.exe").arg(arg).status()};
+    #[cfg(all(unix,not(target_os="macos")))]
+    let status={
+        let uri=tauri::Url::from_file_path(path).map_err(|_| "Cannot reveal export path.")?;
+        let items=serde_json::to_string(&[uri.as_str()]).map_err(|error| error.to_string())?;
+        let result=std::process::Command::new("gdbus").args(["call","--session","--dest","org.freedesktop.FileManager1","--object-path","/org/freedesktop/FileManager1","--method","org.freedesktop.FileManager1.ShowItems",&items,""]).status();
+        if result.as_ref().is_ok_and(|status|status.success()) { result } else {
+            std::process::Command::new("xdg-open").arg(path.parent().ok_or("Invalid export path.")?).status()
+        }
+    };
+    status.map_err(|error| format!("Could not open file manager: {error}"))?.success().then_some(()).ok_or_else(|| "Could not open file manager.".into())
 }
 
 pub(crate) fn persist_document(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
@@ -208,6 +237,7 @@ pub fn run() {
             code_references,
             analyze_code,
             save_document,
+            reveal_last_export,
             ai::ai_models,
             ai::ai_download,
             ai::ai_captions,
@@ -217,6 +247,8 @@ pub fn run() {
             documents::open_recent_project,
             documents::save_project_document,
             documents::save_recovery,
+            documents::discard_recovery,
+            documents::resume_recovery,
             documents::read_recovery
         ])
         .run(tauri::generate_context!())

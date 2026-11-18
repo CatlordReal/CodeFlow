@@ -1,3 +1,5 @@
+import parserLoopFixtures from './fixtures/outside-loop-edit.json';
+import {simplifyGraph,overviewGraph,analyzeLoops} from '../src/simplify';
 import assert from 'node:assert/strict';
 import {defaultChartState} from '../src/history';
 import {mapFunction,matchFunctions,remapChart} from '../src/preservation';
@@ -61,9 +63,11 @@ nestedState.edits={'old-function:overview':{
   'old-body':{natural:'Add repeated value'},
 }};
 nestedState.hiddenBoxes={'old-function':['old-inner','old-body']};
+nestedState.loopOverrides={'old-function':{'old-inner':false}};
+nestedState.edits['old-function:overview']['old-inner']={...nestedState.edits['old-function:overview']['old-inner'],code:'old code label',flagged:true,position:{x:10,y:20}};
 const nestedMapped=remapChart(nestedState,[mapFunction('old-function','new-function',nestedBefore,nestedAfter)]);
 assert.deepEqual(nestedMapped.edits,{'new-function:overview':{
-  'new-inner':{natural:'Sum values',annotation:'Keep nested-loop note'},
+  'new-inner':{natural:'Sum values',annotation:'Keep nested-loop note',code:'old code label',flagged:true,position:{x:10,y:20}},
   'new-body':{natural:'Add repeated value'},
 }},'comment removal retains depth-1 collapsed loop and expanded-region process presentation');
 assert.deepEqual(nestedMapped.hiddenBoxes,{'new-function':['new-inner','new-body']});
@@ -71,8 +75,18 @@ const changedNested=mapFunction('old-function','changed-function',nestedBefore,n
 assert.equal(changedNested.overview.has('old-inner'),false,'collapsed loop body changes invalidate its presentation');
 assert.equal(changedNested.detail.get('old-inner'),'changed-inner','expanded loop header presentation survives body-only changes');
 const changedHidden=remapChart(nestedState,[changedNested]);
-assert.deepEqual(changedHidden.hiddenBoxes,{'changed-function':['changed-body']},'hidden collapsed loop does not transfer through header identity after its body changes');
+assert.deepEqual(changedHidden.hiddenBoxes,{'changed-function':['changed-inner','changed-body']},'hidden collapsed loop follows stable header');
+assert.deepEqual(changedHidden.loopOverrides,{'changed-function':{'changed-inner':false}},'manual collapse survives body edits');
+assert.deepEqual(changedHidden.edits['changed-function:overview']['changed-inner'],{annotation:'Keep nested-loop note',flagged:true,position:{x:10,y:20}},'structural metadata survives; captions tied to changed body are invalidated');
+assert.equal(changedHidden.captions['changed-function:overview']?.['changed-inner'],undefined);
 console.log('PASS: stable code retains labels, notes and layout; changed or ambiguous boxes invalidate only their edits');
+
+// A return inside a loop makes collapsing unsafe; do not force a collapsed box.
+const terminalGraph=nestedLoops('terminal',-21,'inner body changed');
+terminalGraph.nodes=terminalGraph.nodes.map(item=>item.id==='terminal-body'?{...item,kind:'return'}:item);
+const unsafeMapping=mapFunction('old-function','terminal-function',nestedBefore,terminalGraph);
+assert.equal(unsafeMapping.collapsedLoops?.has('old-inner'),false);
+assert.equal(remapChart(nestedState,[unsafeMapping]).hiddenBoxes['terminal-function']?.includes('terminal-inner')??false,false);
 
 const multiLanguage=defaultChartState();
 multiLanguage.edits={'cs:24:overview':{step:{natural:'Keep C# caption'}},'123:overview':{step:{natural:'Keep C++ caption'}}};
@@ -114,7 +128,7 @@ assert.equal(oldHistory.revisions[1].state.edits['f:overview'].loop.annotation,'
 const { readProject } = await import('../src/presentation');
 const persistedProject = {format:'codeflow',version:1,source:commentedSource,fileName:'test.cpp',...commentedHistory.revisions[1].state,history:commentedHistory,sourceHistory:[archive]};
 const reopened = readProject(JSON.stringify(persistedProject));
-assert.deepEqual(reopened.sourceHistory?.[0].history, oldHistory, 'source history survives save and reopen');
+assert.deepEqual(reopened.sourceHistory?.[0].history, {...oldHistory,revisions:oldHistory.revisions.map(revision=>({...revision,state:{...revision.state,source:loopSource,labelSource:loopSource,language:'cpp'}}))}, 'source history survives save and reopen');
 const restoredAfterOpen = restoreArchivedHistory(returned,reopened.sourceHistory![0],loopSource,'cpp');
 assert.equal(restoredAfterOpen.revisions[1].state.edits['f:overview'].loop.annotation,'Revised loop note');
 for (const sourceHistory of [null, {}, Array(11).fill(archive), [{...archive, source:'é'.repeat(1048577)}], [{...archive,language:'python'}], [{...archive,history:{...oldHistory,active:'missing'}}], [{...archive,history:{...oldHistory,revisions:[{...oldHistory.revisions[0],state:{...loopState,edits:{f:{n:{annotation:5}}}}}]}}]]) {
@@ -137,3 +151,50 @@ const many = Array.from({length:11},(_,index)=>({...archive,source:`// ${index}`
 const limited = retainSourceHistory({...archiveProject,sourceHistory:many},latestArchive);
 assert.equal(limited.archives.length,10);
 assert.equal(limited.trimmed,2,'ten-snapshot limit reports evictions');
+
+// Returning to a source must restore hidden boxes lost in an intermediate parse,
+// even when another hidden box survived and was mapped back.
+const hiddenOriginal = defaultChartState();
+hiddenOriginal.hiddenBoxes = { f: ['loop', 'keep'] };
+const hiddenHistory = initialHistory(hiddenOriginal);
+const hiddenIntermediate = { ...hiddenHistory, revisions: hiddenHistory.revisions.map(revision => ({
+  ...revision, state: remapChart(revision.state, [mapFunction('f', 'f', loopGraph, commentGraph)]),
+})) };
+const hiddenReturned = { ...hiddenIntermediate, revisions: hiddenIntermediate.revisions.map(revision => ({
+  ...revision, state: remapChart(revision.state, [mapFunction('f', 'f', commentGraph, loopGraph)]),
+})) };
+const hiddenRestored = restoreArchivedHistory(hiddenReturned, {source: loopSource, language: 'cpp', history: hiddenHistory}, loopSource, 'cpp');
+assert.deepEqual(hiddenRestored.revisions[0].state.hiddenBoxes.f, ['loop', 'keep']);
+
+// Real native C++ parser output: the changed statement is outside the loop.
+// Sources: int f(int n){for(int i=0;i<n;i++){n+=i;break;} cout<<n; return n;}
+//          int f(int n){for(int i=0;i<n;i++){n+=i;break;} n+=1; return n;}
+const [parserBefore,parserAfter]=parserLoopFixtures.map(item=>simplifyGraph(item as FlowGraph));
+for(const parsed of [parserBefore,parserAfter]){
+ const loop=parsed.nodes.find(item=>item.kind==='loop')!;
+ assert.equal(analyzeLoops(parsed).find(item=>item.id===loop.id)?.can_collapse,true);
+ assert.equal(overviewGraph(parsed).nodes.find(item=>item.id===loop.id)?.loop_collapsed,true);
+ assert(!parsed.nodes.some(item=>item.kind==='process'&&item.start_byte<loop.end_byte&&item.end_byte>loop.end_byte),'no process crosses loop boundary');
+}
+const parserOldLoop=parserBefore.nodes.find(item=>item.kind==='loop')!;
+const parserNewLoop=parserAfter.nodes.find(item=>item.kind==='loop')!;
+const parserState=defaultChartState();
+parserState.loopOverrides={f:{[parserOldLoop.id]:false}};
+parserState.hiddenBoxes={f:[parserOldLoop.id]};
+parserState.edits={'f:overview':{[parserOldLoop.id]:{natural:'Loop caption',flagged:true}}};
+const parserMapping=mapFunction('f','f',parserBefore,parserAfter);
+const parserRemapped=remapChart(parserState,[parserMapping]);
+assert.equal(parserRemapped.loopOverrides.f[parserNewLoop.id],false);
+assert.deepEqual(parserRemapped.hiddenBoxes.f,[parserNewLoop.id]);
+assert.deepEqual(parserRemapped.edits['f:overview'][parserNewLoop.id],{natural:'Loop caption',flagged:true});
+
+// Repeated headers retain distinct loops when their bodies uniquely identify them.
+const repeatedBefore=graph([{...loopOld,id:'one',source_identity:'body one'}, {...loopOld,id:'two',source_identity:'body two'},node('outside','old')]);
+const repeatedAfter=graph([{...loopNew,id:'new-one',source_identity:'body one'}, {...loopNew,id:'new-two',source_identity:'body two'},node('new-outside','changed')]);
+const repeated=mapFunction('old','new',repeatedBefore,repeatedAfter);
+assert.equal(repeated.loops.get('one'),'new-one');
+assert.equal(repeated.loops.get('two'),'new-two');
+const repeatedState=defaultChartState();repeatedState.loopOverrides={old:{one:false,two:true}};
+assert.deepEqual(remapChart(repeatedState,[repeated]).loopOverrides,{new:{'new-one':false,'new-two':true}});
+const ambiguousAfter=graph([{...loopNew,id:'a',source_identity:'body one'}, {...loopNew,id:'b',source_identity:'body one'},node('new-outside','changed')]);
+assert.equal(mapFunction('old','new',repeatedBefore,ambiguousAfter).loops.size,0,'ambiguous repeated bodies remain unmapped');

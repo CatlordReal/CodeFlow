@@ -18,6 +18,7 @@ const PROJECT_LIMIT: usize = 16 * 1024 * 1024;
 struct RecoveryWriteState {
     generation: u64,
     backup_created: bool,
+    discarded: bool,
 }
 
 #[derive(Default)]
@@ -25,8 +26,16 @@ pub struct DocumentState {
     targets: Mutex<HashMap<String, PathBuf>>,
     recent_lock: Mutex<()>,
     recovery: Mutex<RecoveryWriteState>,
+    last_export: Mutex<Option<PathBuf>>,
 }
 impl DocumentState {
+    pub(crate) fn remember_export(&self, path: PathBuf) -> Result<(), String> {
+        *self.last_export.lock().map_err(|_| "Export state is unavailable.")? = Some(path);
+        Ok(())
+    }
+    pub(crate) fn last_export(&self) -> Result<PathBuf, String> {
+        self.last_export.lock().map_err(|_| "Export state is unavailable.")?.clone().ok_or_else(|| "No saved export to reveal.".into())
+    }
     fn remember(&self, path: PathBuf) -> Result<String, String> {
         let mut targets = self
             .targets
@@ -139,16 +148,23 @@ fn validate_records(value: &serde_json::Value, captions: bool) -> Result<(), Str
                 match field.as_str() {
                     "position" => {
                         let position = object(label, "Invalid node position.")?;
-                        let valid_coordinate = |key: &str| position.get(key)
-                            .and_then(serde_json::Value::as_f64)
-                            .is_some_and(|coordinate| coordinate.is_finite() && coordinate.abs() <= 10_000_000.0);
+                        let valid_coordinate = |key: &str| {
+                            position
+                                .get(key)
+                                .and_then(serde_json::Value::as_f64)
+                                .is_some_and(|coordinate| {
+                                    coordinate.is_finite() && coordinate.abs() <= 10_000_000.0
+                                })
+                        };
                         if position.keys().any(|key| key != "x" && key != "y")
-                            || !valid_coordinate("x") || !valid_coordinate("y") {
+                            || !valid_coordinate("x")
+                            || !valid_coordinate("y")
+                        {
                             return Err("Invalid node position.".into());
                         }
                     }
                     "flagged" | "flaggedForUpdate" if label.is_boolean() => {}
-                    "code" | "natural" | "annotation" | "loopContinueLabel" | "loopExitLabel"
+                    "code" | "natural" | "annotation" | "loopContinueLabel" | "loopExitLabel" | "trueLabel" | "falseLabel"
                         if label.as_str().is_some_and(|text| text_units(text) <= 2000) => {}
                     _ => return Err("Invalid node text.".into()),
                 }
@@ -265,7 +281,7 @@ fn revision_number(id: &str) -> Option<u64> {
     Some(digits.parse().unwrap_or(u64::MAX))
 }
 
-fn validate_history(value: &serde_json::Value) -> Result<(), String> {
+fn validate_history(value: &serde_json::Value, pool: Option<&Vec<serde_json::Value>>) -> Result<(), String> {
     let history = object(value, "Invalid chart history.")?;
     let revisions = history
         .get("revisions")
@@ -297,12 +313,27 @@ fn validate_history(value: &serde_json::Value) -> Result<(), String> {
         {
             return Err("Invalid chart revision.".into());
         }
-        validate_chart_fields(object(
+        let state = object(
             revision
                 .get("state")
                 .ok_or("Invalid chart revision state.")?,
             "Invalid chart revision state.",
-        )?)?;
+        )?;
+        validate_chart_fields(state)?;
+        for key in ["source", "labelSource"] {
+            if state.get(key).is_some_and(|value| value.as_str().is_none_or(|source| source.len() > 2 * 1024 * 1024)) {
+                return Err("Invalid revision source.".into());
+            }
+        }
+        for (key, ref_key) in [("source", "sourceRef"), ("labelSource", "labelSourceRef")] {
+            if let Some(reference) = state.get(ref_key) {
+                let valid = reference.as_f64().is_some_and(|n| n.is_finite() && n >= 0.0 && n.fract() == 0.0 && pool.is_some_and(|sources| n < sources.len() as f64));
+                if state.contains_key(key) || !valid { return Err("Invalid history source reference.".into()); }
+            }
+        }
+        if state.get("language").is_some_and(|value| !matches!(value.as_str(), Some("cpp" | "csharp"))) {
+            return Err("Invalid revision language.".into());
+        }
         largest = largest.max(revision_number(id).unwrap_or(0));
         ids.insert(id.to_owned());
     }
@@ -339,18 +370,36 @@ fn validate_chart_and_history(
     project: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
     validate_chart_fields(project)?;
+    let pool = match project.get("historySources") {
+        None => None,
+        Some(value) => {
+            let sources=value.as_array().ok_or("Invalid history source pool.")?;
+            if sources.iter().any(|source| source.as_str().is_none_or(|text| text.len()>2*1024*1024)) { return Err("Invalid history source pool.".into()); }
+            Some(sources)
+        }
+    };
     if let Some(history) = project.get("history") {
-        validate_history(history)?;
+        validate_history(history, pool)?;
     }
     if let Some(archives) = project.get("sourceHistory") {
-        let archives = archives.as_array().filter(|items| items.len() <= 10).ok_or("Invalid source history.")?;
+        let archives = archives
+            .as_array()
+            .filter(|items| items.len() <= 10)
+            .ok_or("Invalid source history.")?;
         for archive in archives {
             let archive = object(archive, "Invalid source history.")?;
-            if archive.get("source").and_then(serde_json::Value::as_str).is_none_or(|source| source.len() > 2 * 1024 * 1024)
-                || !matches!(archive.get("language").and_then(serde_json::Value::as_str), Some("cpp" | "csharp")) {
+            if archive
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|source| source.len() > 2 * 1024 * 1024)
+                || !matches!(
+                    archive.get("language").and_then(serde_json::Value::as_str),
+                    Some("cpp" | "csharp")
+                )
+            {
                 return Err("Invalid source history.".into());
             }
-            validate_history(archive.get("history").ok_or("Invalid source history.")?)?;
+            validate_history(archive.get("history").ok_or("Invalid source history.")?, pool)?;
         }
     }
     Ok(())
@@ -485,7 +534,7 @@ fn persist_recovery(
     generation: u64,
     bytes: &[u8],
 ) -> Result<bool, String> {
-    if generation <= state.generation {
+    if state.discarded || generation <= state.generation {
         return Ok(false);
     }
     if !state.backup_created {
@@ -766,6 +815,58 @@ mod tests {
     }
 
     #[test]
+    fn export_target_is_independent_from_project_targets() {
+        let state=DocumentState::default();
+        assert!(state.last_export().is_err());
+        let project=std::path::PathBuf::from("/tmp/project.codeflow");
+        let token=state.remember(project.clone()).unwrap();
+        assert!(state.last_export().is_err());
+        let export=std::path::PathBuf::from("/tmp/flowchart.svg");
+        state.remember_export(export.clone()).unwrap();
+        assert_eq!(state.last_export().unwrap(),export);
+        assert_eq!(state.target(&token).unwrap(),project);
+    }
+
+    #[test]
+    fn packed_history_sources_and_references_are_validated() {
+        let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
+        let state=serde_json::json!({"mode":"natural","edits":{},"captions":{},"sourceRef":0,"labelSourceRef":0});
+        let history=serde_json::json!({"active":"revision-0","next":1,"revisions":[{"id":"revision-0","parent":null,"name":"Initial","state":state}]});
+        value["historySources"]=serde_json::json!(["shared"]);
+        value["history"]=history.clone();
+        value["sourceHistory"]=serde_json::json!([{"source":"old","language":"cpp","history":history}]);
+        assert!(validate_chart_and_history(value.as_object().unwrap()).is_ok());
+        for invalid in [serde_json::json!(-1),serde_json::json!(1),serde_json::json!(0.5),serde_json::json!(null),serde_json::json!("0")] {
+            let mut bad=value.clone();bad["history"]["revisions"][0]["state"]["sourceRef"]=invalid.clone();
+            assert!(validate_chart_and_history(bad.as_object().unwrap()).is_err());
+            let mut bad_archive=value.clone();bad_archive["sourceHistory"][0]["history"]["revisions"][0]["state"]["sourceRef"]=invalid;
+            assert!(validate_chart_and_history(bad_archive.as_object().unwrap()).is_err());
+        }
+        for invalid in [serde_json::json!(null),serde_json::json!({}),serde_json::json!([3]),serde_json::json!(["é".repeat(1_048_577)])] {
+            let mut bad=value.clone();bad["historySources"]=invalid;assert!(validate_chart_and_history(bad.as_object().unwrap()).is_err());
+        }
+        value["history"]["revisions"][0]["state"]["source"]=serde_json::json!("duplicate");
+        assert!(validate_chart_and_history(value.as_object().unwrap()).is_err());
+    }
+
+    #[test]
+    fn revision_source_fields_are_optional_and_validated() {
+        let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
+        let state = serde_json::json!({"mode":"natural","edits":{},"captions":{}});
+        value["history"] = serde_json::json!({"active":"revision-0","next":1,"revisions":[{"id":"revision-0","parent":null,"name":"Initial","state":state}]});
+        assert!(validate_chart_and_history(value.as_object().unwrap()).is_ok());
+        for (key, invalid) in [("source", serde_json::json!(null)), ("labelSource", serde_json::json!("é".repeat(1_048_577))), ("language", serde_json::json!("python"))] {
+            let mut malformed = value.clone();
+            malformed["history"]["revisions"][0]["state"][key] = invalid;
+            assert!(validate_chart_and_history(malformed.as_object().unwrap()).is_err());
+        }
+        value["history"]["revisions"][0]["state"]["source"] = serde_json::json!("new source");
+        value["history"]["revisions"][0]["state"]["labelSource"] = serde_json::json!("old source");
+        value["history"]["revisions"][0]["state"]["language"] = serde_json::json!("csharp");
+        assert!(validate_chart_and_history(value.as_object().unwrap()).is_ok());
+    }
+
+    #[test]
     fn source_history_validates_with_project_history_rules() {
         let mut value: serde_json::Value = serde_json::from_str(&project("source")).unwrap();
         let state = serde_json::json!({"mode":"natural","edits":{"f:overview":{"loop":{"annotation":"Keep"}}},"captions":{}});
@@ -773,10 +874,14 @@ mod tests {
         let archive = serde_json::json!({"source":"old source","language":"cpp","history":history});
         value["sourceHistory"] = serde_json::json!([archive.clone()]);
         assert!(validate_recovery_project(&value.to_string()).is_ok());
-        for invalid in [serde_json::json!(null), serde_json::json!({}), serde_json::json!(vec![archive.clone();11]),
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!(vec![archive.clone(); 11]),
             serde_json::json!([{"source":"old","language":"python","history":history}]),
             serde_json::json!([{"source":"é".repeat(1_048_577),"language":"cpp","history":history}]),
-            serde_json::json!([{"source":"old","language":"cpp","history":{"active":"missing","next":1,"revisions":[]}}])] {
+            serde_json::json!([{"source":"old","language":"cpp","history":{"active":"missing","next":1,"revisions":[]}}]),
+        ] {
             value["sourceHistory"] = invalid;
             assert!(validate_recovery_project(&value.to_string()).is_err());
         }
@@ -788,10 +893,15 @@ mod tests {
         let state = serde_json::json!({"mode":"natural","edits":{},"captions":{},"includeComments":true,"showLoopLabels":false});
         let history = serde_json::json!({"active":"revision-0","next":1,"revisions":[{"id":"revision-0","parent":null,"name":"Initial","state":state}]});
         value["history"] = history.clone();
-        value["sourceHistory"] = serde_json::json!([{"source":"older source","language":"cpp","history":history}]);
+        value["sourceHistory"] =
+            serde_json::json!([{"source":"older source","language":"cpp","history":history}]);
         assert!(validate_recovery_project(&value.to_string()).is_ok());
         for field in ["includeComments", "showLoopLabels"] {
-            for invalid in [serde_json::Value::Null, serde_json::json!("false"), serde_json::json!(0)] {
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!("false"),
+                serde_json::json!(0),
+            ] {
                 let mut current = value.clone();
                 current["history"]["revisions"][0]["state"][field] = invalid.clone();
                 assert!(validate_recovery_project(&current.to_string()).is_err());
@@ -828,7 +938,13 @@ mod tests {
             value
         );
 
-        for invalid in [serde_json::json!(null), serde_json::json!(1), serde_json::json!("false"), serde_json::json!({}), serde_json::json!([])] {
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!(1),
+            serde_json::json!("false"),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
             let mut project = value.clone();
             project["showLoopLabels"] = invalid;
             assert!(validate_chart_and_history(project.as_object().unwrap()).is_err());
@@ -840,15 +956,22 @@ mod tests {
             assert!(validate_chart_and_history(project.as_object().unwrap()).is_ok());
             assert!(validate_recovery_project(&project.to_string()).is_ok());
         }
-        for invalid in [serde_json::json!(null), serde_json::json!([]), serde_json::json!({}),
-            serde_json::json!({"x":0}), serde_json::json!({"x":0,"y":10000001}),
-            serde_json::json!({"x":"0","y":1}), serde_json::json!({"x":0,"y":1,"z":2})] {
+        for invalid in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!({}),
+            serde_json::json!({"x":0}),
+            serde_json::json!({"x":0,"y":10000001}),
+            serde_json::json!({"x":"0","y":1}),
+            serde_json::json!({"x":0,"y":1,"z":2}),
+        ] {
             let mut current = value.clone();
             current["edits"]["function:detail"]["loop"]["position"] = invalid.clone();
             assert!(validate_chart_and_history(current.as_object().unwrap()).is_err());
             assert!(validate_recovery_project(&current.to_string()).is_err());
             let mut historical = value.clone();
-            historical["history"]["revisions"][0]["state"]["edits"]["function:detail"]["loop"]["position"] = invalid;
+            historical["history"]["revisions"][0]["state"]["edits"]["function:detail"]["loop"]
+                ["position"] = invalid;
             assert!(validate_chart_and_history(historical.as_object().unwrap()).is_err());
         }
         for field in ["flagged", "flaggedForUpdate"] {
@@ -875,7 +998,7 @@ mod tests {
                 );
             }
         }
-        for field in ["loopContinueLabel", "loopExitLabel"] {
+        for field in ["loopContinueLabel", "loopExitLabel", "trueLabel", "falseLabel"] {
             for invalid in [
                 serde_json::json!(true),
                 serde_json::json!(1),
@@ -941,6 +1064,30 @@ mod tests {
         );
         assert_eq!(std::fs::read(previous).unwrap(), original);
         assert_eq!(state.generation, 3);
+    }
+
+    #[test]
+    fn discarded_recovery_is_archived_and_pending_writes_are_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(RECOVERY_NAME);
+        let previous = dir.path().join(RECOVERY_PREVIOUS_NAME);
+        let original = recovery(&project("unsaved"), true, true, true);
+        std::fs::write(&path, &original).unwrap();
+        let mut state = RecoveryWriteState::default();
+        archive_discarded_recovery(&path).unwrap();
+        state.discarded = true;
+        assert!(!path.exists());
+        let archived = std::fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(archived).unwrap(), original);
+        assert!(!persist_recovery(&path, &previous, &mut state, 1, &original).unwrap());
+        assert!(!path.exists());
+        state.discarded = false;
+        assert!(persist_recovery(&path, &previous, &mut state, 2, &original).unwrap());
     }
 
     #[test]
@@ -1087,7 +1234,7 @@ pub async fn save_recovery(
             .recovery
             .lock()
             .map_err(|_| "Recovery state is unavailable.")?;
-        if generation <= recovery.generation {
+        if recovery.discarded || generation <= recovery.generation {
             return Ok(());
         }
         let target = project_token
@@ -1111,6 +1258,71 @@ pub async fn save_recovery(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn archive_discarded_recovery(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        let parent = path.parent().ok_or("Invalid recovery path.")?;
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let mut archived = false;
+        for attempt in 0..100 {
+            let target = parent.join(format!(
+                "current-project-recovery.discarded-{stamp}-{}-{attempt}.json",
+                std::process::id()
+            ));
+            match std::fs::hard_link(&path, &target) {
+                Ok(()) => {
+                    if let Err(error) = std::fs::remove_file(&path) {
+                        let _ = std::fs::remove_file(&target);
+                        return Err(error.to_string());
+                    }
+                    archived = true;
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        if !archived {
+            return Err("Could not archive discarded recovery.".into());
+        }
+    }
+    Ok(())
+}
+
+// Keep discarded work out of automatic restore while retaining a recoverable copy.
+#[tauri::command]
+pub async fn discard_recovery(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DocumentState>();
+        let mut recovery = state
+            .recovery
+            .lock()
+            .map_err(|_| "Recovery state is unavailable.")?;
+        let path = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join(RECOVERY_NAME);
+        archive_discarded_recovery(&path)?;
+        recovery.discarded = true;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn resume_recovery(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<DocumentState>();
+    let mut recovery = state
+        .recovery
+        .lock()
+        .map_err(|_| "Recovery state is unavailable.")?;
+    recovery.discarded = false;
+    Ok(())
 }
 #[tauri::command]
 pub async fn read_recovery(app: tauri::AppHandle) -> Result<Option<OpenedDocument>, String> {

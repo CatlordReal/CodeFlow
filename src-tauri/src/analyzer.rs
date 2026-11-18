@@ -610,7 +610,54 @@ pub fn inspect(source: String) -> Vec<FunctionInfo> {
     let Ok(tree) = parse(&source) else {
         return Vec::new();
     };
-    function_definitions(&source, tree.root_node())
+    inspect_tree(&source, &tree)
+}
+
+pub fn inspect_checked(source: String) -> Result<Vec<FunctionInfo>, String> {
+    let tree = parse(&source)?;
+    let mut macros = std::collections::HashSet::new();
+    collect_macro_names(tree.root_node(), &source, &mut macros);
+    if let Some(error) = inspection_diagnostic(tree.root_node(), &source, &macros, None) {
+        return Err(error);
+    }
+    Ok(inspect_tree(&source, &tree))
+}
+
+fn collect_macro_names(node: Node<'_>, source: &str, names: &mut std::collections::HashSet<String>) {
+    if matches!(node.kind(), "preproc_def" | "preproc_function_def") {
+        if let Some(name) = node.child_by_field_name("name") {
+            if let Ok(text) = name.utf8_text(source.as_bytes()) { names.insert(text.to_owned()); }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) { collect_macro_names(child, source, names); }
+}
+
+// Tree-sitter may read an export macro as the return type and mark the real
+// type as an error. Only tolerate a declared macro followed by one identifier.
+fn inspection_diagnostic(node: Node<'_>, source: &str, macros: &std::collections::HashSet<String>, header_end: Option<usize>) -> Option<String> {
+    let header_end = if node.kind() == "function_definition" {
+        let macro_type = node.child_by_field_name("type").and_then(|n| n.utf8_text(source.as_bytes()).ok()).is_some_and(|name| macros.contains(name));
+        if macro_type { node.child_by_field_name("declarator").map(|n| n.start_byte()) } else { None }
+    } else { header_end };
+    let header_error = node.is_error() && header_end.is_some_and(|end| node.end_byte() <= end)
+        && node.utf8_text(source.as_bytes()).ok().is_some_and(|text| {
+            let mut chars = text.chars();
+            chars.next().is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+                && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+        });
+    if node.is_missing() || (node.is_error() && !header_error) {
+        return Some(format!("{} at line {}, column {}",
+            if node.is_missing() { format!("Missing {}", node.kind()) } else { "Syntax error".to_owned() },
+            node.start_position().row + 1, node.start_position().column + 1));
+    }
+    let mut cursor = node.walk();
+    let result = node.children(&mut cursor).find_map(|child| inspection_diagnostic(child, source, macros, header_end));
+    result
+}
+
+fn inspect_tree(source: &str, tree: &Tree) -> Vec<FunctionInfo> {
+    function_definitions(source, tree.root_node())
         .into_iter()
         .map(|definition| definition.info)
         .collect()
@@ -1225,6 +1272,29 @@ fn collect_parse_diagnostics(node: Node<'_>, diagnostics: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn checked_inspection_accepts_export_macro_header_without_accepting_partial_functions() {
+        let source = "#define API __attribute__((visibility(\"default\")))\nAPI int foo(){return 1;}";
+        let functions = inspect_checked(source.to_owned()).unwrap();
+        assert_eq!(functions.len(), 1);
+        assert_eq!(functions[0].name, "foo");
+        for malformed in ["int @ foo(){return 1;}", "int x y foo(){return 1;}", "#define API x\nAPI int @ foo(){return 1;}"] { assert!(inspect_checked(malformed.to_owned()).is_err(), "{malformed}"); }
+        assert!(inspect_checked(format!("{source}\nint second() {{ return 2;")).is_err());
+        assert!(inspect_checked(format!("{source}\nvoid second(")).is_err());
+    }
+
+    #[test]
+    fn checked_inspection_rejects_incomplete_source_and_accepts_valid_edits() {
+        for source in ["int first() { return 1; }\nint second() { return 2;", "int first() { return 1; }\n/* unfinished"] {
+            let error = inspect_checked(source.to_owned()).expect_err("incomplete source must fail");
+            assert!(error.contains("line"), "{error}");
+            assert!(!error.contains(source), "diagnostic must not contain source");
+        }
+        let source = "#include <vector>\n\n// comment\nint first() { while (true) { break; } return 1; }";
+        assert!(!inspect_checked(source.to_owned()).unwrap().is_empty());
+    }
 
     fn sample() -> String {
         r#"

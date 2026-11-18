@@ -26,13 +26,17 @@ Choose **C++** or **C#** beside the app name, open a source file or paste code, 
 - Conventional flowchart symbols with exact parser-derived decisions and paths.
 - Loop depth controls for overview, nested levels, or full expansion.
 - Individual loop expansion and collapse, where control flow permits it.
-- Editable loop-arrow labels, exact classic-loop conditions, range-loop completion labels, and distinct Loop badges. While loops default to Looping / Ended.
+- Editable decision and loop-arrow labels with distinct Loop badges. Decision branches default to True / False; loop branches default to Running / Done.
 - Code and natural-language label modes, source comments, annotations, box hiding, removal flags, and highlighting for unchanged natural-language labels.
-- SVG and PNG export using the palette active at export time.
+- SVG and PNG export using a chosen colour scheme, with optional transparent backgrounds. Click the export confirmation to reveal the saved file.
 
-Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects visible paths and removes hidden loop return arrows and labels. **Show hidden boxes** sits beside **Comments**. **Flag for removal** and **Flag for update** mark separate review states without changing code or deleting boxes. These flags never appear in exported charts. Hide/show preserves the current viewport. Select a loop header to edit its **Looping arrow** and **Exit arrow** text. Clearing a field restores its default; whitespace-only labels are hidden. **Tools > Loop arrow labels** hides all loop exit text.
+Hidden boxes remain recoverable through **Show hidden boxes**. Hiding reconnects visible paths and removes hidden loop return arrows and labels. **Show hidden boxes** sits beside **Comments**. **Flag for removal** and **Flag for update** mark separate review states without changing code or deleting boxes. These flags never appear in exported charts. Hide/show preserves the current viewport. Select a loop header to edit its **Looping arrow** and **Exit arrow** text, or an if statement to edit **True arrow** and **False arrow**. Clearing a field restores its default; whitespace-only labels are hidden. **Tools > Loop arrow labels** hides all loop exit text.
 
 ## Arrange and navigate
+
+Code edits and chart edits share one chronological undo history: use **Cmd/Ctrl+Z**, **Cmd/Ctrl+Shift+Z**, or **Cmd/Ctrl+Y** even while editing source. Undo restores source, hidden boxes, loop expansion, labels and positions together. While code is incomplete, the last valid chart stays visible. Older undo steps are bounded by 500 revisions and an 8 MiB packed-history budget; saved projects remain limited to 16 MB. Older project files are read without expanding a separate copy of source into every saved revision.
+
+Closing unsaved work offers **Save**, **Close without saving**, or **Cancel**. Closing without saving leaves saved project files unchanged and excludes unsaved work from automatic restore; the recovery copy is archived in app data.
 
 Drag individual boxes in Function or Whole program view. Edges follow moved boxes; alignment guides snap box edges and centres within seven screen pixels. Hold Shift to move freely. Positions are included in saves, recovery, and undo history. Reset a box to restore its automatic position. File map cards remain function previews.
 

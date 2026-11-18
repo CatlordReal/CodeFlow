@@ -32,7 +32,12 @@ export async function layoutGraph(graph: FlowGraph, displayLabels: ReadonlyMap<s
   const sides = new Map(graph.edges.map((edge) => {
     const source = byId.get(edge.source)!;
     const backward = backedges.has(edge.id);
-    const sourceSide: Side = backward ? "w" : flowShape(source) === "decision" && edge.label === "No" ? "e" : "s";
+    // Branch identity is structural; display labels can be renamed or hidden.
+    // A loop exit may itself return to an enclosing loop, and a hidden body
+    // may collapse the running branch into a self-edge.
+    const isExit = flowShape(source) === "decision" && edge.label === "No";
+    const isLoopBody = source.kind === "loop" && edge.label === "Yes";
+    const sourceSide: Side = isExit ? "e" : backward && !isLoopBody ? "w" : "s";
     return [edge.id, { sourceSide, targetSide: backward ? "w" as Side : "n" as Side }];
   }));
   const result: ElkNode = await elk.layout({

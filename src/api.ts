@@ -3,9 +3,9 @@ import type { FlowGraph, FunctionInfo, SourceLanguage } from "./types";
 
 const isTauri = () => "__TAURI_INTERNALS__" in window;
 
-export async function inspectCpp(source: string, language: SourceLanguage = 'cpp'): Promise<FunctionInfo[]> {
+export async function inspectCpp(source: string, language: SourceLanguage = 'cpp', allowIncomplete=false): Promise<FunctionInfo[]> {
   if (isTauri()) {
-    return language === "cpp" ? invoke<FunctionInfo[]>("inspect_cpp", { source }) : invoke<FunctionInfo[]>("inspect_code", { source, language });
+    return language === "cpp" ? invoke<FunctionInfo[]>("inspect_cpp", { source, allowIncomplete }) : invoke<FunctionInfo[]>("inspect_code", { source, language, allowIncomplete });
   }
   if(language === "csharp") throw new Error("C# analysis runs in the desktop app.");
   return previewFunctions(source);
@@ -111,7 +111,15 @@ export async function saveProjectDocument(name:string,contents:string,projectTok
 
 let recoveryGeneration=0;
 export async function saveRecovery(contents:string,projectToken:string|null,dirty=true,sourceDirty=dirty,projectDirty=dirty):Promise<void>{if(isTauri())await invoke('save_recovery',{contents,projectToken,dirty,sourceDirty,projectDirty,generation:++recoveryGeneration});}
+export async function discardRecovery():Promise<void>{if(isTauri())await invoke('discard_recovery');}
+export async function resumeRecovery():Promise<void>{if(isTauri())await invoke('resume_recovery');}
 export async function readRecovery():Promise<OpenedDocument|null>{return isTauri()?invoke('read_recovery'):null;}
 
 export type FunctionReference={source:string;target:string;label:string;start_byte?:number;end_byte?:number};
 export async function functionReferences(source:string,language:SourceLanguage='cpp'):Promise<FunctionReference[]>{return isTauri()?invoke(language==='cpp'?'function_references':'code_references',{source,language}):[];}
+
+/** Reveal only the last successful desktop export chosen in the save dialog. */
+export async function revealLastExport():Promise<void> {
+  if(!isTauri()) throw new Error('Reveal is available in the desktop app.');
+  await invoke('reveal_last_export');
+}

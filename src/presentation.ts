@@ -2,7 +2,7 @@ import type {ChartHistory} from './history';
 import type { FlowGraph, FlowNode, SourceLanguage, ChartView } from './types';
 
 export type ChartMode = 'code' | 'natural';
-export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean; flaggedForUpdate?: boolean; loopContinueLabel?: string; loopExitLabel?: string; position?: {x:number;y:number} };
+export type NodeEdit = { code?: string; natural?: string; annotation?: string; flagged?: boolean; flaggedForUpdate?: boolean; loopContinueLabel?: string; loopExitLabel?: string; trueLabel?: string; falseLabel?: string; position?: {x:number;y:number} };
 export type ChartEdits = Record<string, Record<string, NodeEdit>>;
 export type CaptionSets = Record<string, Record<string, string>>;
 
@@ -31,6 +31,8 @@ export function presentGraph(graph: FlowGraph, mode: ChartMode, comments: boolea
     flaggedForUpdate: edits[node.id]?.flaggedForUpdate ?? false,
     loopContinueLabel: edits[node.id]?.loopContinueLabel,
     loopExitLabel: edits[node.id]?.loopExitLabel,
+    trueLabel: edits[node.id]?.trueLabel,
+    falseLabel: edits[node.id]?.falseLabel,
     position: edits[node.id]?.position,
     comments: comments ? node.comments : [],
   })) };
@@ -38,23 +40,20 @@ export function presentGraph(graph: FlowGraph, mode: ChartMode, comments: boolea
 
 /** Replace structural loop branch labels without mutating analyzer output. */
 export function presentLoopEdgeLabels(graph: FlowGraph, showLabels = true): FlowGraph {
-  const loops = new Map(graph.nodes
-    .filter(node => node.kind === 'loop')
-    .map(node => [node.id, {
-      condition: node.loop_condition?.trim() || null,
-      forLoop: /^(?:for|foreach)\s*\(/s.test(node.original_label ?? node.label),
-      range: /^(?:for\s*\([^;]*:[^;]*\)|foreach\s*\(.*\bin\b.*\))$/s.test(node.original_label ?? node.label),
-      continueLabel: node.loopContinueLabel,
-      exitLabel: node.loopExitLabel,
-    }]));
+  const sources = new Map(graph.nodes.map(node => [node.id, node]));
   return {
     ...graph,
     edges: graph.edges.map(edge => {
-      const loop = loops.get(edge.source);
-      if (!loop) return edge;
-      if (!showLabels) return { ...edge, label: '' };
-      if (edge.label === 'Yes') return { ...edge, label: loop.continueLabel ?? (loop.forLoop ? loop.condition ?? (loop.range ? 'Next item' : 'Always') : 'Looping') };
-      if (edge.label === 'No') return { ...edge, label: loop.exitLabel ?? (loop.forLoop ? loop.condition ? `not (${loop.condition})` : (loop.range ? 'Finished' : 'Never') : 'Ended') };
+      const node = sources.get(edge.source);
+      if (node?.kind === 'loop') {
+        if (!showLabels) return { ...edge, label: '' };
+        if (edge.label === 'Yes') return { ...edge, label: node.loopContinueLabel ?? 'Running' };
+        if (edge.label === 'No') return { ...edge, label: node.loopExitLabel ?? 'Done' };
+      }
+      if (node?.kind === 'decision') {
+        if (edge.label === 'Yes') return { ...edge, label: node.trueLabel ?? 'True' };
+        if (edge.label === 'No') return { ...edge, label: node.falseLabel ?? 'False' };
+      }
       return edge;
     }),
   };
@@ -73,6 +72,7 @@ export function readProject(text: string): Project {
   if (value?.format !== 'codeflow' || value.version !== 1 || typeof value.source !== 'string'
     || new TextEncoder().encode(value.source).length > 2 * 1024 * 1024
     || typeof value.fileName !== 'string' || !value.fileName.trim() || value.fileName.length > 240 || /[\x00-\x1f]/.test(value.fileName) || !['code','natural'].includes(value.mode)) throw new Error('Invalid CodeFlow project.');
+  if(value.historySources!==undefined && (!Array.isArray(value.historySources) || value.historySources.some((source:unknown)=>typeof source!=='string' || new TextEncoder().encode(source).length>2*1024*1024))) throw new Error('Invalid history source pool.');
   value.language ??= 'cpp'; value.view ??= 'function';
   if(!['cpp','csharp'].includes(value.language) || !['function','file','program'].includes(value.view)) throw new Error('Invalid project language or view.');
   const records = (input: unknown, captions: boolean) => {
@@ -93,7 +93,7 @@ export function readProject(text: string): Project {
               if (!p || typeof p !== 'object' || Array.isArray(p) || Object.keys(p).some(k => k !== 'x' && k !== 'y') || typeof p.x !== 'number' || typeof p.y !== 'number' || !Number.isFinite(p.x) || !Number.isFinite(p.y) || Math.abs(p.x) > 10000000 || Math.abs(p.y) > 10000000) throw new Error('Invalid node position.');
               continue;
             }
-            if (key==='flagged' || key==='flaggedForUpdate' ? typeof label !== 'boolean' : (!['code','natural','annotation','loopContinueLabel','loopExitLabel'].includes(key) || typeof label !== 'string' || label.length > 2000)) throw new Error('Invalid node text.');
+            if (key==='flagged' || key==='flaggedForUpdate' ? typeof label !== 'boolean' : (!['code','natural','annotation','loopContinueLabel','loopExitLabel','trueLabel','falseLabel'].includes(key) || typeof label !== 'string' || label.length > 2000)) throw new Error('Invalid node text.');
           }
         }
       }
@@ -131,8 +131,21 @@ export function readProject(text: string): Project {
       if(!revision||!validLoopKey(revision.id)||ids.has(revision.id)||typeof revision.name!=='string'||revision.name.length>120||(revision.parent!==null&&!ids.has(revision.parent)))throw new Error('Invalid chart revision.');
       ids.add(revision.id);const number=/^revision-(\d+)$/.exec(revision.id);if(number)largest=Math.max(largest,Number(number[1]));
       if(!revision.state||typeof revision.state!=='object'||Array.isArray(revision.state))throw new Error('Invalid chart revision state.');
-      const validated=readProject(JSON.stringify({format:'codeflow',version:1,source:'',fileName:'history.cpp',includeComments:value.includeComments,showLoopLabels:value.showLoopLabels,...revision.state,history:undefined,sourceHistory:undefined}));
-      revision.state={mode:validated.mode,edits:validated.edits,captions:validated.captions,loopDepth:validated.loopDepth,loopOverrides:validated.loopOverrides,hiddenBoxes:validated.hiddenBoxes,showHiddenBoxes:validated.showHiddenBoxes,includeComments:validated.includeComments,showLoopLabels:validated.showLoopLabels??true,functionPositions:validated.functionPositions};
+      const state=revision.state;
+      const resolve=(key:'source'|'labelSource',fallback:string)=>{
+        const refKey=key==='source'?'sourceRef':'labelSourceRef';
+        if(refKey in state){
+          if(key in state || !Array.isArray(value.historySources) || !Number.isSafeInteger(state[refKey]) || state[refKey]<0 || state[refKey]>=value.historySources.length)throw new Error('Invalid history source reference.');
+          return value.historySources[state[refKey]] as string;
+        }
+        if(key in state && (typeof state[key]!=='string' || new TextEncoder().encode(state[key]).length>2*1024*1024))throw new Error('Invalid revision source.');
+        return state[key] ?? fallback;
+      };
+      const source=resolve('source',value.source),labelSource=resolve('labelSource',value.labelSource);
+      if('language' in state && !['cpp','csharp'].includes(state.language))throw new Error('Invalid revision language.');
+      const {source: _source,labelSource: _labelSource,sourceRef: _sourceRef,labelSourceRef: _labelSourceRef,...chartState}=state;
+      const validated=readProject(JSON.stringify({format:'codeflow',version:1,source:'',labelSource:'',language:value.language,fileName:'history.cpp',includeComments:value.includeComments,showLoopLabels:value.showLoopLabels,...chartState,history:undefined,sourceHistory:undefined}));
+      revision.state={source,labelSource,language:validated.language,mode:validated.mode,edits:validated.edits,captions:validated.captions,loopDepth:validated.loopDepth,loopOverrides:validated.loopOverrides,hiddenBoxes:validated.hiddenBoxes,showHiddenBoxes:validated.showHiddenBoxes,includeComments:validated.includeComments,showLoopLabels:validated.showLoopLabels??true,functionPositions:validated.functionPositions};
     }
     if(!ids.has(h.active)||h.next<=largest)throw new Error('Invalid active chart revision.');
   }
@@ -148,6 +161,7 @@ export function readProject(text: string): Project {
     }
   }
   value.expandLoops = value.loopDepth === null;
+  delete value.historySources;
   return value as Project;
 }
 
@@ -177,9 +191,8 @@ export function hideGraphNodes(graph: FlowGraph, hiddenIds: string[], showHidden
       const fromLoopBody=loop && node.start_byte>=step.start_byte && node.start_byte<step.end_byte;
       for(const edge of outgoing.get(id)??[]){
         if(loop && fromLoopBody && (edge.label==='Yes' || edge.label==='Repeat'))continue;
-        const text=loop?'':['decision','switch'].includes(step.kind) ? `${step.original_label ?? step.label}${edge.label?' · '+edge.label:''}`:edge.label;
         const prior=loop && (label==='Repeat' || label==='Continue')?'':label;
-        walk(edge.target,[prior,text].filter(Boolean).join(' / '),nextVisited,throughLoop||loop);
+        walk(edge.target,prior,nextVisited,throughLoop||loop);
       }
     };
     for(const edge of outgoing.get(node.id)??[])walk(edge.target,edge.label,new Set(),false);

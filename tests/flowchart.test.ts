@@ -5,6 +5,7 @@ import { layoutGraph, NODE_WIDTH, nodeHeight, routeLabelBounds, routeLabelPositi
 import { createSvgDocument } from "../src/exportSvg";
 import type { FlowGraph, FlowNode } from "../src/types";
 import { functionAtByte, nodeAtByte } from "../src/sourceNavigation";
+import { hideGraphNodes, presentLoopEdgeLabels } from "../src/presentation";
 import { editorAwareCenter, functionViewportFitKey } from "../src/viewport";
 
 const viewportState = { source: "int work() {}", functionId: "work", loopDepth: 1, loopOverrides: {}, hiddenNodeIds: [], showHiddenNodes: false };
@@ -160,7 +161,43 @@ async function verifyLayout(simple: FlowGraph, name: string) {
 }
 await verifyLayout(simple, "branch");
 await verifyLayout(jump, "loop jumps");
+
+// Inner-loop exit returns to outer header: exit and return use opposite ports,
+// irrespective of custom displayed labels or hidden intermediate boxes.
+const directNested = graph([
+ node("n0", "start"), {...node("n1", "loop", "outer"), end_byte: 100},
+ {...node("n2", "loop", "inner"), start_byte: 30, end_byte: 70, loopContinueLabel: "Again", loopExitLabel: "Later"},
+ {...node("n3", "process", "inner body"), start_byte: 40, end_byte: 45}, node("n9", "end", "End", 110),
+], [["n0","n1"],["n1","n2","Yes"],["n1","n9","No"],["n2","n3","Yes"],["n3","n2","Repeat"],["n2","n1","No"]]);
+for (const input of [directNested, hideGraphNodes(directNested, ["n3"], false)]) {
+ const display = new Map(presentLoopEdgeLabels(input).edges.map(edge => [edge.id, edge.label]));
+ const canvas = await layoutGraph(input, display);
+ const exit = canvas.edges.find(edge => edge.source === "n2" && edge.target === "n1")!;
+ assert.equal(exit.sourceHandle, "out-e", "inner exit leaves right even when it returns to outer loop");
+ assert.equal(exit.targetHandle, "in-w", "return enters outer loop from left");
+ const innerReturn = canvas.edges.find(edge => edge.target === "n2" && edge.source !== "n1")!;
+ assert.equal(innerReturn.targetHandle, "in-w", "loop return enters left");
+ const inner = canvas.nodes.find(node => node.id === "n2")!;
+ assert.deepEqual(innerReturn.data!.points.at(-1), {x:inner.position.x,y:inner.position.y + nodeHeight(inner.data.flow)/2}, "return reaches left port");
+ if (innerReturn.source === "n2") {
+   const [start, next] = innerReturn.data!.points;
+   assert(next.x === start.x && next.y > start.y, "hidden-body return leaves bottom");
+ }
+ assert.equal(canvas.edges.find(edge => edge.source === "n2" && edge.label === "Yes")?.sourceHandle, "out-s", "running branch leaves bottom even when body is hidden");
+ assert.equal(display.get(exit.id), "Later", "custom exit label survives routing");
+ const [a,b] = exit.data!.points;
+ assert(b.x > a.x && b.y === a.y, "exit starts toward right, away from incoming return");
+}
+
 await verifyLayout(overview, "loop overview");
+// Both continue paths return to the header without using its exit side.
+const multipleReturns = graph([
+ node("n0", "start"), {...node("n1", "loop", "while"), end_byte: 100},
+ node("n2", "decision", "choose"), node("n3", "process", "first"), node("n4", "process", "second"), node("n9", "end", "End", 110),
+], [["n0","n1"],["n1","n2","Yes"],["n1","n9","No"],["n2","n3","Yes"],["n2","n4","No"],["n3","n1","Repeat"],["n4","n1","Repeat"]]);
+const multipleCanvas = await layoutGraph(multipleReturns);
+assert.equal(multipleCanvas.edges.find(edge => edge.source === "n1" && edge.label === "No")?.sourceHandle, "out-e");
+assert.deepEqual(multipleCanvas.edges.filter(edge => edge.target === "n1" && edge.source !== "n0").map(edge => edge.targetHandle), ["in-w", "in-w"]);
 const displayedLoopLabels = new Map(overview.edges.map((edge) => [edge.id, edge.label === "Yes" ? "every pending request has completed successfully" : edge.label === "No" ? longBranch : edge.label]));
 const displayedLoop = await layoutGraph(overview, displayedLoopLabels);
 for (const edge of displayedLoop.edges) {

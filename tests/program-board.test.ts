@@ -89,3 +89,6 @@ assert.equal(await cache.use('source-b', 'main', load), 2, 'source changes inval
 let attempts = 0;
 await assert.rejects(cache.use('source-b', 'failed', async () => { attempts++; throw new Error('failed'); }));
 assert.equal(await cache.use('source-b', 'failed', async () => ++attempts), 2, 'failed parse can retry');
+
+const transparentProgram=composeProgramSvg(diagrams,calls,positions,{...palette,background:'transparent'},()=>'<svg viewBox="0 0 10 10"></svg>');
+assert(transparentProgram.includes('fill="transparent"'),'program export preserves transparent background');

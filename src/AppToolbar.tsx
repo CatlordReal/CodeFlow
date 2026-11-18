@@ -8,6 +8,8 @@ import "./AppToolbar.css";
 export type AppToolbarProps = {
   onFullscreenError: (message:string)=>void;
   exportTheme: ThemeId | 'current';
+  exportTransparent: boolean;
+  onExportTransparentChange: (value:boolean)=>void;
   onExportThemeChange: (theme:ThemeId|'current')=>void;
   language: "cpp" | "csharp";
   onLanguageChange: (language: "cpp" | "csharp") => void;
@@ -44,7 +46,7 @@ function Icon({ name }: { name: IconName }) {
 }
 
 export default function AppToolbar({
-  language, onFullscreenError, exportTheme, onExportThemeChange,
+  language, onFullscreenError, exportTheme, onExportThemeChange, exportTransparent, onExportTransparentChange,
   onLanguageChange,
   recentProjects,
   onNewProject,
@@ -154,6 +156,7 @@ export default function AppToolbar({
           <summary className="button button--primary">Export <Icon name="chevron" /></summary>
           <div className="app-toolbar__menu" role="group" aria-label="Export actions">
             <label className="app-toolbar__export-theme">Colour scheme<select aria-label="Export colour scheme" value={exportTheme} onChange={event=>onExportThemeChange(event.target.value as ThemeId|'current')}><option value="current">Current app</option>{THEMES.filter(theme=>theme.family!=='Solar / Sand').map(theme=><option key={theme.id} value={theme.id}>{theme.name}</option>)}</select></label>
+            <label className="app-toolbar__export-transparent"><input type="checkbox" checked={exportTransparent} onChange={event=>onExportTransparentChange(event.target.checked)} /> Transparent background</label>
             <button disabled={!exportReady} onClick={() => run(onExportSvg)}><Icon name="export" /> Export SVG</button>
             <button disabled={!exportReady} onClick={() => run(onExportPng)}>Export PNG</button>
           </div>

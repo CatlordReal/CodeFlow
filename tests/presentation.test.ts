@@ -24,13 +24,13 @@ const loopGraph:FlowGraph={nodes:[
   {id:'repeat',source:'end',target:'loop',label:'Repeat'},
 ],diagnostics:[]};
 const loopOriginal=JSON.stringify(loopGraph);
-assert.deepEqual(presentLoopEdgeLabels(loopGraph).edges.map(edge=>edge.label),['i < 3','not (i < 3)','Next item','Finished','Always','Never','Repeat']);
+assert.deepEqual(presentLoopEdgeLabels(loopGraph).edges.map(edge=>edge.label),['Running','Done','Running','Done','Running','Done','Repeat']);
 const noLoopLabels=presentLoopEdgeLabels(loopGraph,false);
 assert.deepEqual(noLoopLabels.edges.map(edge=>edge.label),['','','','','','','Repeat']);
 assert.deepEqual(noLoopLabels.edges.map(({label,...edge})=>edge),loopGraph.edges.map(({label,...edge})=>edge),'hiding labels preserves edge structure');
 assert.equal(JSON.stringify(loopGraph),loopOriginal,'loop labels must not mutate analyzer output');
 const whileGraph:FlowGraph={...loopGraph,nodes:loopGraph.nodes.map(node=>node.id==='loop'?{...node,label:'ready',loop_condition:'ready'}:node)};
-assert.deepEqual(presentLoopEdgeLabels(whileGraph).edges.slice(0,2).map(edge=>edge.label),['Looping','Ended'],'while/do condition labels use brief defaults');
+assert.deepEqual(presentLoopEdgeLabels(whileGraph).edges.slice(0,2).map(edge=>edge.label),['Running','Done'],'while/do condition labels use brief defaults');
 const customLoops=presentGraph(whileGraph,'natural',false,{loop:{loopContinueLabel:'Process next item',loopExitLabel:'All done'}});
 assert.deepEqual(presentLoopEdgeLabels(customLoops).edges.slice(0,2).map(edge=>edge.label),['Process next item','All done']);
 assert.deepEqual(customLoops.edges,whileGraph.edges,'branch text edits must not change parser edge structure');
@@ -59,9 +59,9 @@ for(const position of [null,[],{}, {x:1}, {x:1,y:null}, {x:'1',y:2}, {x:10000001
 
 assert.deepEqual(readProject(JSON.stringify({...project,edits:{f:{n1:{flagged:false,flaggedForUpdate:false}}}})).edits.f.n1,{flagged:false,flaggedForUpdate:false});
 for(const field of ['flagged','flaggedForUpdate'])for(const invalid of ['true',1,null,{},[]])assert.throws(()=>readProject(JSON.stringify({...project,edits:{f:{n1:{[field]:invalid}}}})),`${field} must be boolean`);
-for(const field of ['loopContinueLabel','loopExitLabel']){
+for(const field of ['loopContinueLabel','loopExitLabel','trueLabel','falseLabel']){
   for(const invalid of [true,1,null,{},[],'x'.repeat(2001)])assert.throws(()=>readProject(JSON.stringify({...project,edits:{f:{n1:{[field]:invalid}}}})),`${field} must be a bounded string`);
-  assert.equal(readProject(JSON.stringify({...project,edits:{f:{n1:{[field]:'x'.repeat(2000)}}}})).edits.f.n1[field as 'loopContinueLabel'|'loopExitLabel']?.length,2000);
+  assert.equal(readProject(JSON.stringify({...project,edits:{f:{n1:{[field]:'x'.repeat(2000)}}}})).edits.f.n1[field as 'loopContinueLabel'|'loopExitLabel'|'trueLabel'|'falseLabel']?.length,2000);
 }
 for(const invalid of [{...project,version:2},{...project,fileName:''},{...project,edits:[]},{...project,captions:{f:{n1:3}}},{...project,edits:{f:{n1:{annotation:'x'.repeat(2001)}}}}]) {
  assert.throws(()=>readProject(JSON.stringify(invalid)));
@@ -91,7 +91,7 @@ assert.deepEqual(readProject(JSON.stringify(csProject)),{...csProject,showLoopLa
 for(const value of [{...project,language:'java'},{...project,view:'folder'}])assert.throws(()=>readProject(JSON.stringify(value)));
 assert.equal(loopCaption('foreach (var item in values)'), 'For each item in values');
 const csLoop={...loopGraph,nodes:[{...graph.nodes[0],id:'each',kind:'loop',label:'foreach (var item in values)',loop_condition:null}],edges:[{id:'next',source:'each',target:'body',label:'Yes'},{id:'done',source:'each',target:'end',label:'No'}]};
-assert.deepEqual(presentLoopEdgeLabels(csLoop).edges.map(edge=>edge.label),['Next item','Finished']);
+assert.deepEqual(presentLoopEdgeLabels(csLoop).edges.map(edge=>edge.label),['Running','Done']);
 
 const hiddenLoopGraph: FlowGraph = {nodes:[
  {...graph.nodes[0],id:'entry',kind:'start',start_byte:0,end_byte:0},
@@ -102,3 +102,40 @@ const hiddenLoopGraph: FlowGraph = {nodes:[
 {id:'c',source:'body',target:'loop',label:'Repeat'},{id:'d',source:'loop',target:'exit',label:'No'}],diagnostics:[]};
 const hiddenLoop=hideGraphNodes(hiddenLoopGraph,['loop'],false);
 assert.deepEqual(hiddenLoop.edges.map(({source,target,label})=>[source,target,label]),[['entry','body',''],['entry','exit',''],['body','exit','']]);
+
+// Hidden control boxes must not leave their source text or branch labels on bypass edges.
+const nestedHidden:FlowGraph={nodes:[
+ {...graph.nodes[0],id:'entry',kind:'start',start_byte:0,end_byte:0},
+ {...graph.nodes[0],id:'outer',kind:'loop',label:'for (int i = 0; i < n; i++)',start_byte:10,end_byte:100},
+ {...graph.nodes[0],id:'choice',kind:'decision',label:'secret_condition()',start_byte:20,end_byte:70},
+ {...graph.nodes[0],id:'inner',kind:'loop',label:'while (private_condition())',start_byte:30,end_byte:60},
+ {...graph.nodes[0],id:'body',kind:'process',start_byte:40,end_byte:50},
+ {...graph.nodes[0],id:'exit',kind:'end',start_byte:110,end_byte:110},
+],edges:[
+ {id:'a',source:'entry',target:'outer',label:''},
+ {id:'b',source:'outer',target:'choice',label:'Yes'},
+ {id:'c',source:'outer',target:'exit',label:'No'},
+ {id:'d',source:'choice',target:'inner',label:'Yes'},
+ {id:'e',source:'choice',target:'outer',label:'No'},
+ {id:'f',source:'inner',target:'body',label:'Yes'},
+ {id:'g',source:'inner',target:'outer',label:'No'},
+ {id:'h',source:'body',target:'inner',label:'Repeat'},
+],diagnostics:[]};
+const bypass=hideGraphNodes(nestedHidden,['choice','inner'],false);
+assert(bypass.edges.every(edge=>!edge.label.includes('condition') && !edge.label.includes(' / ')));
+const presentedBypass=presentLoopEdgeLabels(presentGraph(bypass,'code',false,{outer:{loopContinueLabel:'Keep going',loopExitLabel:'Finished'}}));
+assert(presentedBypass.edges.some(edge=>edge.source==='outer' && edge.label==='Keep going'));
+assert(presentedBypass.edges.some(edge=>edge.source==='outer' && edge.label==='Finished'));
+assert(presentLoopEdgeLabels(presentGraph(bypass,'code',false,{outer:{loopContinueLabel:'Keep going'}}),false).edges.filter(edge=>edge.source==='outer').every(edge=>edge.label===''));
+const decisionGraph:FlowGraph={nodes:[{...graph.nodes[0],id:'choice',kind:'decision'},{...graph.nodes[0],id:'yes'},{...graph.nodes[0],id:'no'}],edges:[{id:'yes',source:'choice',target:'yes',label:'Yes'},{id:'no',source:'choice',target:'no',label:'No'}],diagnostics:[]};
+assert.deepEqual(presentLoopEdgeLabels(decisionGraph).edges.map(edge=>edge.label),['True','False']);
+assert.deepEqual(presentLoopEdgeLabels(decisionGraph,false).edges.map(edge=>edge.label),['True','False']);
+assert(hideGraphNodes(decisionGraph,['choice'],true).nodes.find(node=>node.id==='choice')?.hidden);
+
+const customDecision=presentGraph(decisionGraph,'natural',false,{choice:{trueLabel:'Proceed',falseLabel:'   '}});
+assert.deepEqual(presentLoopEdgeLabels(customDecision).edges.map(edge=>edge.label),['Proceed','   ']);
+assert.deepEqual(presentLoopEdgeLabels(customDecision,false).edges.map(edge=>edge.label),['Proceed','   '],'loop label toggle does not hide decision labels');
+const switchGraph={...decisionGraph,nodes:decisionGraph.nodes.map(node=>node.id==='choice'?{...node,kind:'switch'}:node)};
+assert.deepEqual(presentLoopEdgeLabels(presentGraph(switchGraph,'code',false,{choice:{trueLabel:'Wrong'}})).edges.map(edge=>edge.label),['Yes','No']);
+const decisionProject={...project,edits:{'f:detail':{choice:{trueLabel:'Proceed',falseLabel:'   '}}}};
+assert.deepEqual(readProject(JSON.stringify(decisionProject)).edits,decisionProject.edits);

@@ -106,3 +106,13 @@ for (const [sourceSide, targetSide, sourcePosition, targetPosition, axis, sign] 
  assert.deepEqual(points.at(-1), expectedEnd);
  for (let i=1;i<points.length;i++) assert.ok(sign * (points[i][axis] - points[i-1][axis]) >= 0, `close ${sourceSide}/${targetSide} route does not backtrack`);
 }
+
+// A hidden loop body becomes a self-edge; moving its header keeps body and
+// return attached to separate bottom and left ports.
+const loopNode: CanvasNode = {...node('loop', 0, 0), data: {flow: {...node('loop', 0, 0).data.flow, kind: 'loop', position: {x: 150, y: 120}}}};
+const selfEdge: CanvasEdge = {id:'self',source:'loop',target:'loop',sourceHandle:'out-s',targetHandle:'in-w',data:{points:[{x:50,y:80},{x:-24,y:80},{x:-24,y:40},{x:0,y:40}],labelPosition:{x:-24,y:60},sourceOrigin:{x:0,y:0},targetOrigin:{x:0,y:0}}};
+const selfPoints = positionedCanvas([loopNode], [selfEdge]).edges[0].data!.points;
+assert.deepEqual(selfPoints[0], {x:200,y:200});
+assert.deepEqual(selfPoints.at(-1), {x:150,y:160});
+assert(selfPoints[1].x === 200 && selfPoints[1].y > 200, 'self-edge leaves bottom');
+assert(selfPoints.at(-2)!.x < 150 && selfPoints.at(-2)!.y === 160, 'self-edge arrives from left');
