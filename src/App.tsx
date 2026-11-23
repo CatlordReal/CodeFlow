@@ -127,6 +127,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [documentEpoch,setDocumentEpoch]=useState(0);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ kind: "idle", message: "" });
   const [availableUpdate, setAvailableUpdate] = useState<{ currentVersion: string; version: string; body?: string } | null>(null);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
@@ -147,7 +148,7 @@ export default function App() {
   const finishCloseChoice=(choice:CloseChoice)=>{const resolve=closeChoice.current;closeChoice.current=null;setCloseChoiceOpen(false);resolve?.(choice);};
   const sourceRef = useRef(source);
   const saveRequest = useRef(0);
-  const replaceSource=useCallback((text:string)=>{inspectRequest.current++;analyzeRequest.current++;layoutRequest.current++;sourceRef.current=text;},[]);
+  const replaceSource=useCallback((text:string)=>{inspectRequest.current++;sourceRef.current=text;setDocumentEpoch(value=>value+1);},[]);
   const isDesktop = "__TAURI_INTERNALS__" in window;
   sourceRef.current = source;dirtyRef.current=isDirty||projectDirty;sourceDirtyRef.current=isDirty;projectDirtyRef.current=projectDirty;recoveryReadyRef.current=recoveryReady;
   const projectRef = useRef<Project>({format:'codeflow',version:1,source,fileName,language,view:chartView,mode,edits,captions,expandLoops,includeComments,showLoopLabels,loopDepth,loopOverrides,hiddenBoxes,showHiddenBoxes,functionPositions,history});
@@ -189,8 +190,9 @@ export default function App() {
 
   useEffect(() => {
     if(!recoveryReady)return;
-    analyzeRequest.current++;layoutRequest.current++;
-    if((chart.labelSource??source)===source&&((inspectedSource===source&&inspectedLanguage===language)||(pendingInspection?.source===source&&pendingInspection.language===language))){setError('');setIsInspecting(false);return;}
+    // Editor changes must not cancel work for the last accepted source. Each
+    // downstream effect owns cancellation when its actual inputs change.
+    if((chart.labelSource??source)===source&&((inspectedSource===source&&inspectedLanguage===language)||(pendingInspection?.source===source&&pendingInspection.language===language&&pendingInspection.session===documentSession.current&&pendingInspection.request===inspectRequest.current))){setError('');setIsInspecting(false);return;}
     const request=++inspectRequest.current, session=documentSession.current;
     setIsInspecting(true);
     setSelectedNodeId('');setSelectedLine(null);
@@ -275,7 +277,7 @@ export default function App() {
       }finally{if(request===inspectRequest.current)setIsInspecting(false);}
     },260);
     return()=>window.clearTimeout(timer);
-  },[source,recoveryReady,language,chart.labelSource]);
+  },[source,recoveryReady,language,chart.labelSource,documentEpoch]);
 
   useEffect(()=>{
     if(!pendingInspection)return;
@@ -293,6 +295,7 @@ export default function App() {
 
   useEffect(() => {
     const request = ++analyzeRequest.current;
+    const session=documentSession.current;
     if (!selectedFunction) {
       setIsAnalyzing(false);
       if(inspectedSource===source&&!selectedFunction){setGraph({nodes:[],edges:[],diagnostics:[]});setGraphSource(source);setGraphFunction('');}
@@ -302,20 +305,21 @@ export default function App() {
     void (async () => {
       try {
         const nextGraph = simplifyGraph(await analyzeCpp(inspectedSource, selectedFunction, true,inspectedLanguage));
-        if (request !== analyzeRequest.current) return;
+        if (request !== analyzeRequest.current || session !== documentSession.current) return;
         setGraph(nextGraph); setGraphSource(inspectedSource);setGraphLanguage(inspectedLanguage);setGraphFunction(selectedFunction);
 
-        setError("");
+        if(sourceRef.current===inspectedSource&&(chartRef.current.language??'cpp')===inspectedLanguage)setError("");
 
       } catch (cause) {
-        if (request !== analyzeRequest.current) return;
-        setError(`${readError(cause)} Showing the last valid chart.`);
+        if (request !== analyzeRequest.current || session !== documentSession.current) return;
+        if(sourceRef.current===inspectedSource&&(chartRef.current.language??'cpp')===inspectedLanguage)setError(`${readError(cause)} Showing the last valid chart.`);
 
       } finally {
         if (request === analyzeRequest.current) setIsAnalyzing(false);
       }
     })();
-  }, [inspectedSource, inspectedLanguage, selectedFunction, refreshKey]);
+    return()=>{analyzeRequest.current++;};
+  }, [inspectedSource, inspectedLanguage, selectedFunction, refreshKey,documentEpoch]);
 
   const presentationSource=boardView?inspectedSource:graphSource;
   const presentedState=useRef(chart);
@@ -333,17 +337,18 @@ export default function App() {
   const lastFitKey=useRef('');
   useEffect(() => {
     const request = ++layoutRequest.current;
+    const session=documentSession.current;
     if (draggingBox.current) return;
     if (!displayedGraph.nodes.length) { setCanvasNodes([]); setCanvasEdges([]); return; }
     const labels=new Map(presentLoopEdgeLabels(displayedGraph,showLoopLabels).edges.map(edge=>[edge.id,edge.label]));
     void layoutGraph(displayedGraph,labels).then(layout => {
       const result=positionedCanvas(layout.nodes,layout.edges,labels);
-      if (request !== layoutRequest.current) return;
+      if (request !== layoutRequest.current || session !== documentSession.current) return;
       setCanvasNodes(result.nodes.map(node=>({...node,selected:node.id===selectedNodeRef.current}))); setCanvasEdges(result.edges.map(edge=>({...edge,label:labels.get(edge.id)??edge.label})));
       if(lastFitKey.current!==fitKey){lastFitKey.current=fitKey;window.setTimeout(()=>{if(request===layoutRequest.current&&!draggingBox.current)void flowRef.current?.fitView({padding:0.12,duration:0});},60);}
-    }).catch(cause => { if(request===layoutRequest.current) setError(readError(cause)); });
+    }).catch(cause => { if(request===layoutRequest.current&&session===documentSession.current) setError(readError(cause)); });
     return () => { layoutRequest.current++; };
-  }, [displayedGraph,fitKey,showLoopLabels,layoutEpoch]);
+  }, [displayedGraph,fitKey,showLoopLabels,layoutEpoch,documentEpoch]);
   useEffect(()=>setCanvasNodes(nodes=>nodes.map(node=>({...node,selected:node.id===selectedNodeId}))),[selectedNodeId]);
   const selectedNode = displayedGraph.nodes.find(node => node.id === selectedNodeId);
   const graphKey = source + '\0' + selectedFunction + '\0' + JSON.stringify([loopDepth,loopOverrides[selectedFunction] ?? {},hiddenBoxes[selectedFunction]??[],showHiddenBoxes]);
@@ -406,7 +411,7 @@ export default function App() {
       if(before.language!==now.language || before.view!==now.view || before.source!==now.source || before.fileName!==now.fileName || before.edits!==now.edits || before.captions!==now.captions || before.mode!==now.mode || before.loopDepth!==now.loopDepth || before.loopOverrides!==now.loopOverrides || before.hiddenBoxes!==now.hiddenBoxes || before.showHiddenBoxes!==now.showHiddenBoxes || before.functionPositions!==now.functionPositions || before.history!==now.history || before.includeComments!==now.includeComments || before.showLoopLabels!==now.showLoopLabels) {
         setDocumentStatus({kind:'info',message:'Open canceled because the document changed.'}); return;
       }
-      inspectRequest.current++;analyzeRequest.current++;
+      inspectRequest.current++;
       saveRequest.current += 1;
       if(file.name.endsWith('.codeflow')) {
         const project = readProject(contents);
@@ -696,7 +701,7 @@ export default function App() {
         if(next===language)return;
         setBoardSvg('');
         if(baseline.current)labelLibrary.current=[{...baseline.current,state:chartRef.current},...labelLibrary.current].slice(0,10);
-        documentSession.current++;inspectRequest.current++;analyzeRequest.current++;baseline.current=null;libraryLoaded.current=false;
+        documentSession.current++;inspectRequest.current++;setDocumentEpoch(value=>value+1);baseline.current=null;libraryLoaded.current=false;
         changeFields({source,labelSource:source,language:next},'Source language');setFileName(name=>name.replace(/\.(?:cpp|cc|cxx|cs)$/i,next==='cpp'?'.cpp':'.cs'));
         setFunctions([]);setSelectedFunction('');setInspectedSource('');setShowAI(false);clearSelection();setProjectDirty(true);
       }} recentProjects={recent} onNewProject={()=>void newProject()} onOpen={()=>void openChooser()} onOpenRecent={id=>void openChooser(id)}
